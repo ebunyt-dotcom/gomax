@@ -15,6 +15,8 @@ Workflow уже находится в репозитории, но GitHub Pages 
 
     https://ebunyt-dotcom.github.io/gomax/
 
+Если до включения Pages workflow был красным, после этой настройки его можно перезапустить в Actions или дождаться нового push в main.
+
 ## Как обновляется сайт
 
 Изменения в docs или mkdocs.yml автоматически запускают workflow:
@@ -34,4 +36,3 @@ Workflow уже находится в репозитории, но GitHub Pages 
 - .github/workflows/docs.yml — процесс публикации.
 
 Полная инструкция GitHub по custom workflow: [Using custom workflows with GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
-
