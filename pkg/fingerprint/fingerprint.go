@@ -26,17 +26,18 @@ func NewFingerprintGenerator(data *ApkBuildFingerprint) *FingerprintGenerator {
 	return &FingerprintGenerator{data: data}
 }
 
-// DefaultFingerprint returns a default Android mobile build fingerprint.
+// DefaultFingerprint returns a default Android mobile build fingerprint matching PyMax 26.25.0 (build 6790).
 func DefaultFingerprint() *ApkBuildFingerprint {
 	return &ApkBuildFingerprint{
-		VersionCode:           24020,
-		VersionName:           "24.2.0",
-		CertificateMetaSha256: "b0769b76c8bbdb0407137456d2524d77519a4a7cfcb7863bf68a18fa3080ffb0",
-		DexMetaSha256:         "3c0f4f7d45f4ea6c45c116d47b5ef6f279f64e229f3d9b4b9b99df8996bdfdf8",
+		VersionCode:           6790,
+		VersionName:           "26.25.0",
+		CertificateMetaSha256: "1684414033eb263e2c615f8b7df5ed8793850a07656304997fbf07e9e21e1e93",
+		DexMetaSha256:         "8db68fcc0e85e8f041fe4a875c0a9bcfe542a8f679603728c651ed81b64dd684",
 		SoMetaSha256: map[string]string{
-			"arm64-v8a": "5a2f5f7dc5f4ea6c45c116d47b5ef6f279f64e229f3d9b4b9b99df8996bdfd01",
-			"armeabi-v7a": "5a2f5f7dc5f4ea6c45c116d47b5ef6f279f64e229f3d9b4b9b99df8996bdfd02",
-			"x86_64":    "5a2f5f7dc5f4ea6c45c116d47b5ef6f279f64e229f3d9b4b9b99df8996bdfd03",
+			"arm64-v8a":   "634ecc42b246784d975f180b4fecf903df235cdf0476da47163a85630eb1a6a8",
+			"armeabi-v7a": "042220bdd481a280d2c1f4f6827f0e4fab7bca61e5af0f6035a0d191aed1350c",
+			"x86":         "deffe34d2a9d83584e02cbb3f22ba5a6dbe1b065dbc8a8ea8ca908dae865c5f6",
+			"x86_64":      "251b88c27a1c055f27adc110e44a75a1c60408b0d5e20e3844f816aa227212a3",
 		},
 	}
 }

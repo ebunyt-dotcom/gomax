@@ -88,6 +88,18 @@ func NewConnectionManager(
 	c := DefaultConfig()
 	if cfg != nil {
 		c = *cfg
+		if c.PingInterval <= 0 {
+			c.PingInterval = DefaultPingInterval
+		}
+		if c.PingTimeout <= 0 {
+			c.PingTimeout = DefaultPingTimeout
+		}
+		if c.RequestTimeout <= 0 {
+			c.RequestTimeout = DefaultRequestTimeout
+		}
+		if c.EventsChanSize <= 0 {
+			c.EventsChanSize = DefaultEventsChanSize
+		}
 	}
 
 	return &ConnectionManager{
@@ -237,6 +249,17 @@ func (m *ConnectionManager) SendRequest(ctx context.Context, opcode protocol.Opc
 		return nil, ErrConnectionNotOpen
 	}
 
+	reqCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := m.cfg.RequestTimeout
+		if timeout <= 0 {
+			timeout = DefaultRequestTimeout
+		}
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	seq := m.seqGen.Next()
 	ch := m.pending.Create(seq)
 	defer m.pending.Discard(seq)
@@ -259,8 +282,8 @@ func (m *ConnectionManager) SendRequest(ctx context.Context, opcode protocol.Opc
 	}
 
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-reqCtx.Done():
+		return nil, reqCtx.Err()
 	case resp, ok := <-ch:
 		if !ok || resp == nil {
 			if !m.IsOpen() {

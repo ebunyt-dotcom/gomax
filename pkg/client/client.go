@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
+	"math/big"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type Config struct {
 	UseSSL         bool
 	Proxy          string
 	DeviceID       string
+	MtInstanceID   string
 	Token          string
 	PersistSession bool
 	Reconnect      bool
@@ -60,11 +63,12 @@ func DefaultConfig() *Config {
 
 // Client is the primary high-level TCP client for Max API.
 type Client struct {
-	cfg     *Config
-	conn    *connection.ConnectionManager
-	store   session.Store
-	router  *dispatch.Router
-	fpGen   *fingerprint.FingerprintGenerator
+	cfg       *Config
+	conn      *connection.ConnectionManager
+	store     session.Store
+	router    *dispatch.Router
+	fpGen     *fingerprint.FingerprintGenerator
+	callsSeed int64
 
 	Messages *messages.MessageService
 	Chats    *chats.ChatService
@@ -76,6 +80,23 @@ type Client struct {
 	started bool
 	ctx     context.Context
 	cancel  context.CancelFunc
+}
+
+// CallsSeed returns the callsSeed received from the handshake.
+func (c *Client) CallsSeed() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.callsSeed
+}
+
+// GetDeviceID returns the client device ID.
+func (c *Client) GetDeviceID() string {
+	return c.cfg.DeviceID
+}
+
+// GetCallsSeed returns the handshake callsSeed.
+func (c *Client) GetCallsSeed() int64 {
+	return c.CallsSeed()
 }
 
 func randomHex(n int) string {
@@ -99,6 +120,9 @@ func NewClient(cfg *Config) *Client {
 	}
 	if cfg.DeviceID == "" {
 		cfg.DeviceID = randomHex(8)
+	}
+	if cfg.MtInstanceID == "" {
+		cfg.MtInstanceID = randomHex(8)
 	}
 
 	var store session.Store
@@ -238,18 +262,78 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.conn = connManager
 	c.mu.Unlock()
 
+	log.Printf("[gomax] Connecting to Max server at %s:%d (SSL=%v)...", tcpOpts.Host, tcpOpts.Port, tcpOpts.UseSSL)
 	if err := connManager.Start(ctx); err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
+	log.Printf("[gomax] Connected to Max server successfully")
+
+	// Load session info to reuse deviceId and mt_instanceid if previously saved
+	sessInfo, err := c.store.LoadSession()
+	if err != nil {
+		_ = connManager.Close()
+		return fmt.Errorf("failed to load session: %w", err)
+	}
+
+	if sessInfo != nil {
+		if sessInfo.DeviceID != "" {
+			c.cfg.DeviceID = sessInfo.DeviceID
+		}
+		if sessInfo.MTInstanceID != "" {
+			c.cfg.MtInstanceID = sessInfo.MTInstanceID
+		}
+	}
+	if c.cfg.DeviceID == "" {
+		c.cfg.DeviceID = randomHex(8)
+	}
+	if c.cfg.MtInstanceID == "" {
+		c.cfg.MtInstanceID = randomHex(8)
+	}
 
 	// 1. Session Init Handshake
-	initPayload := map[string]interface{}{
-		"deviceId": c.cfg.DeviceID,
+	csID, err := rand.Int(rand.Reader, big.NewInt(70))
+	clientSessionID := 1
+	if err == nil {
+		clientSessionID = int(csID.Int64()) + 1
 	}
+
+	userAgent := map[string]interface{}{
+		"deviceType":     "ANDROID",
+		"appVersion":     "26.25.0",
+		"osVersion":      "Android 14",
+		"timezone":       "Europe/Moscow",
+		"screen":         "405dpi 405dpi 1080x2400",
+		"pushDeviceType": "GCM",
+		"arch":           "arm64-v8a",
+		"locale":         "ru",
+		"deviceLocale":   "ru",
+		"buildNumber":    6790,
+		"deviceName":     "Samsung SM-A536B",
+	}
+
+	initPayload := map[string]interface{}{
+		"mt_instanceid":   c.cfg.MtInstanceID,
+		"userAgent":       userAgent,
+		"clientSessionId": clientSessionID,
+		"deviceId":        c.cfg.DeviceID,
+	}
+
+	log.Printf("[gomax] Sending mobile session handshake (SESSION_INIT, deviceId=%s, mt_instanceid=%s, clientSessionId=%d)...",
+		c.cfg.DeviceID, c.cfg.MtInstanceID, clientSessionID)
 	initRes, err := c.Invoke(ctx, protocol.OpSessionInit, initPayload)
 	if err != nil {
 		_ = connManager.Close()
 		return fmt.Errorf("session init failed: %w", err)
+	}
+
+	// Validate response does not contain an API validation error
+	if errMsg, ok := initRes["error"].(string); ok && errMsg != "" {
+		_ = connManager.Close()
+		return fmt.Errorf("session init validation error from server: %s (message: %v)", errMsg, initRes["message"])
+	}
+	if errCode, ok := initRes["err"].(string); ok && errCode != "" {
+		_ = connManager.Close()
+		return fmt.Errorf("session init error from server: %s", errCode)
 	}
 
 	var callsSeed int64
@@ -257,15 +341,19 @@ func (c *Client) runSession(ctx context.Context) error {
 		callsSeed = cs
 	} else if csF, ok := initRes["callsSeed"].(float64); ok {
 		callsSeed = int64(csF)
+	} else if csI, ok := initRes["callsSeed"].(int); ok {
+		callsSeed = int64(csI)
+	} else if csU, ok := initRes["callsSeed"].(uint64); ok {
+		callsSeed = int64(csU)
 	}
+
+	c.mu.Lock()
+	c.callsSeed = callsSeed
+	c.mu.Unlock()
+
+	log.Printf("[gomax] Handshake completed successfully (callsSeed=%d)", callsSeed)
 
 	// 2. Load or execute Auth
-	sessInfo, err := c.store.LoadSession()
-	if err != nil {
-		_ = connManager.Close()
-		return fmt.Errorf("failed to load session: %w", err)
-	}
-
 	token := c.cfg.Token
 	if token == "" && sessInfo != nil {
 		token = sessInfo.Token
@@ -276,7 +364,23 @@ func (c *Client) runSession(ctx context.Context) error {
 			_ = connManager.Close()
 			return errors.New("phone number required for initial authentication")
 		}
-		smsFlow := auth.NewSmsAuthFlow(nil, nil)
+		log.Printf("[gomax] No active session token found; starting SMS authentication for %s...", c.cfg.Phone)
+		smsFlow := c.cfg.AuthFlow
+		if smsFlow.CodeProvider == nil {
+			smsFlow.CodeProvider = &auth.ConsoleCodeProvider{}
+		}
+		if smsFlow.PasswordProvider == nil {
+			smsFlow.PasswordProvider = &auth.ConsolePasswordProvider{}
+		}
+		smsFlow.DeviceID = c.cfg.DeviceID
+		smsFlow.CallsSeed = callsSeed
+		if smsFlow.FpGen == nil {
+			smsFlow.FpGen = c.fpGen
+		}
+		if smsFlow.Arch == "" {
+			smsFlow.Arch = "arm64-v8a"
+		}
+
 		authRes, err := smsFlow.Authenticate(ctx, c, c.cfg.Phone)
 		if err != nil {
 			_ = connManager.Close()
@@ -284,20 +388,32 @@ func (c *Client) runSession(ctx context.Context) error {
 		}
 		token = authRes.Token
 		_ = c.store.SaveSession(&session.SessionInfo{
-			Token:    token,
-			Phone:    c.cfg.Phone,
-			DeviceID: c.cfg.DeviceID,
+			Token:        token,
+			Phone:        c.cfg.Phone,
+			DeviceID:     c.cfg.DeviceID,
+			MTInstanceID: c.cfg.MtInstanceID,
 		})
+		log.Printf("[gomax] Session credentials saved to store")
+	} else {
+		log.Printf("[gomax] Resuming session for device %s...", c.cfg.DeviceID)
 	}
 
 	// 3. Login
+	log.Printf("[gomax] Logging in with session token...")
 	loginPayload := map[string]interface{}{
-		"token":    token,
-		"deviceId": c.cfg.DeviceID,
+		"token":         token,
+		"deviceId":      c.cfg.DeviceID,
+		"userAgent":     userAgent,
+		"chatsSync":     -1,
+		"contactsSync":  -1,
+		"presenceSync":  -1,
+		"draftsSync":    -1,
+		"interactive":   true,
 	}
 	if callsSeed != 0 {
 		fp, _ := c.fpGen.GenerateFingerprint(c.cfg.DeviceID, callsSeed, "arm64-v8a")
 		if len(fp) > 0 {
+			loginPayload["chatCacheFingerprint"] = fp
 			loginPayload["fingerprint"] = fp
 		}
 	}
@@ -308,18 +424,49 @@ func (c *Client) runSession(ctx context.Context) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
+	// If token refreshed
+	if newToken, ok := loginRes["token"].(string); ok && newToken != "" && newToken != token {
+		token = newToken
+		_ = c.store.UpdateToken(c.cfg.Phone, token)
+	}
+
 	// Resolve Self User profile
 	c.Me = &types.User{}
 	if profileData, ok := loginRes["profile"].(map[string]interface{}); ok {
-		if id, ok := profileData["id"].(int64); ok {
-			c.Me.ID = id
-		} else if idF, ok := profileData["id"].(float64); ok {
-			c.Me.ID = int64(idF)
+		userData := profileData
+		if contactData, ok := profileData["contact"].(map[string]interface{}); ok {
+			userData = contactData
 		}
-		if fn, ok := profileData["firstName"].(string); ok {
+		if id, ok := userData["id"].(int64); ok {
+			c.Me.ID = id
+		} else if idF, ok := userData["id"].(float64); ok {
+			c.Me.ID = int64(idF)
+		} else if idI, ok := userData["id"].(int); ok {
+			c.Me.ID = int64(idI)
+		}
+		if fn, ok := userData["firstName"].(string); ok {
+			c.Me.FirstName = fn
+		}
+		if ln, ok := userData["lastName"].(string); ok {
+			c.Me.LastName = ln
+		}
+		if ph, ok := userData["phone"].(string); ok {
+			c.Me.Phone = ph
+		}
+	} else if userMap, ok := loginRes["user"].(map[string]interface{}); ok {
+		if id, ok := userMap["id"].(int64); ok {
+			c.Me.ID = id
+		} else if idF, ok := userMap["id"].(float64); ok {
+			c.Me.ID = int64(idF)
+		} else if idI, ok := userMap["id"].(int); ok {
+			c.Me.ID = int64(idI)
+		}
+		if fn, ok := userMap["firstName"].(string); ok {
 			c.Me.FirstName = fn
 		}
 	}
+
+	log.Printf("[gomax] Login successful! Logged in as '%s' (ID: %d)", c.Me.FirstName, c.Me.ID)
 
 	// Dispatch OnStart hooks
 	c.router.DispatchStart(ctx)
