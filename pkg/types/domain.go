@@ -118,3 +118,38 @@ type Message struct {
 	IsPinned     bool           `json:"is_pinned,omitempty" msgpack:"is_pinned,omitempty"`
 	IsDeleted    bool           `json:"is_deleted,omitempty" msgpack:"is_deleted,omitempty"`
 }
+
+// ReactionEvent represents a reaction add/remove notification push from the server.
+type ReactionEvent struct {
+	ChatID    int64  `json:"chat_id" msgpack:"chat_id"`
+	MessageID int64  `json:"message_id" msgpack:"message_id"`
+	UserID    int64  `json:"user_id" msgpack:"user_id"`
+	Reaction  string `json:"reaction" msgpack:"reaction"`
+	Removed   bool   `json:"removed" msgpack:"removed"`
+}
+
+// PresenceEvent represents a user online/offline status change notification.
+type PresenceEvent struct {
+	UserID int64 `json:"user_id" msgpack:"user_id"`
+	Online bool  `json:"online" msgpack:"online"`
+}
+
+// Folder represents a chat filter/folder used to organize dialogs.
+type Folder struct {
+	ID      string  `json:"id" msgpack:"id"`
+	Title   string  `json:"title" msgpack:"title"`
+	Include []int64 `json:"include" msgpack:"include"`
+}
+
+// FolderList represents a paginated list of chat folders with a sync marker.
+type FolderList struct {
+	Folders []Folder `json:"folders" msgpack:"folders"`
+	Sync    int64    `json:"sync" msgpack:"sync"`
+}
+
+// TypingEvent represents a user typing/action indicator in a chat.
+type TypingEvent struct {
+	ChatID int64 `json:"chat_id" msgpack:"chat_id"`
+	UserID int64 `json:"user_id" msgpack:"user_id"`
+}
+

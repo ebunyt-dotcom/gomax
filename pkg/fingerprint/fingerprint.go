@@ -44,7 +44,7 @@ func DefaultFingerprint() *ApkBuildFingerprint {
 
 // GenerateFingerprint calculates the 96-byte combined SHA256 signature (Cert + Dex + Lib).
 func (g *FingerprintGenerator) GenerateFingerprint(deviceID string, callsSeed int64, arch string) ([]byte, error) {
-	if g.data == nil {
+	if g == nil || g.data == nil {
 		return nil, errors.New("fingerprint data is nil")
 	}
 	if arch == "" {
@@ -53,11 +53,26 @@ func (g *FingerprintGenerator) GenerateFingerprint(deviceID string, callsSeed in
 
 	soHashHex, ok := g.data.SoMetaSha256[arch]
 	if !ok {
-		// Fallback to first available arch
-		for _, v := range g.data.SoMetaSha256 {
-			soHashHex = v
-			break
+		// Deterministic fallback to arm64-v8a or first known arch
+		if defaultSo, hasArm := g.data.SoMetaSha256["arm64-v8a"]; hasArm {
+			soHashHex = defaultSo
+		} else {
+			for _, k := range []string{"armeabi-v7a", "x86_64", "x86"} {
+				if v, exists := g.data.SoMetaSha256[k]; exists {
+					soHashHex = v
+					break
+				}
+			}
+			if soHashHex == "" {
+				for _, v := range g.data.SoMetaSha256 {
+					soHashHex = v
+					break
+				}
+			}
 		}
+	}
+	if soHashHex == "" {
+		return nil, errors.New("no SO meta sha256 found for architecture")
 	}
 
 	certBytes, err := hex.DecodeString(g.data.CertificateMetaSha256)

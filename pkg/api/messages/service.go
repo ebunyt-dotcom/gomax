@@ -277,3 +277,40 @@ func (s *MessageService) VotePoll(ctx context.Context, chatID int64, messageID i
 	}
 	return nil
 }
+
+// GetMessage retrieves a single message by its ID within a chat.
+func (s *MessageService) GetMessage(ctx context.Context, chatID, messageID int64) (*types.Message, error) {
+	payload := map[string]interface{}{
+		"chatId":    chatID,
+		"messageId": messageID,
+	}
+
+	res, err := s.invoker.Invoke(ctx, protocol.OpMsgGet, payload)
+	if err != nil {
+		return nil, fmt.Errorf("get message failed: %w", err)
+	}
+
+	msg := &types.Message{ChatID: chatID}
+	src := res
+	if mData, ok := res["message"].(map[string]interface{}); ok {
+		src = mData
+	}
+	if id, ok := src["id"].(int64); ok {
+		msg.ID = id
+	} else if idF, ok := src["id"].(float64); ok {
+		msg.ID = int64(idF)
+	}
+	if text, ok := src["text"].(string); ok {
+		msg.Text = text
+	}
+	if sender, ok := src["sender"].(int64); ok {
+		msg.SenderID = sender
+	} else if senderF, ok := src["sender"].(float64); ok {
+		msg.SenderID = int64(senderF)
+	}
+	if ts, ok := src["time"].(float64); ok {
+		msg.Time = int64(ts)
+	}
+	return msg, nil
+}
+

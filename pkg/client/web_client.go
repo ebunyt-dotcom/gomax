@@ -9,6 +9,7 @@ import (
 
 	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
+	selfapi "github.com/ebunyt-dotcom/gomax/pkg/api/selfapi"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/uploads"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/users"
 	"github.com/ebunyt-dotcom/gomax/pkg/auth"
@@ -31,6 +32,7 @@ type WebClient struct {
 	Chats    *chats.ChatService
 	Users    *users.UserService
 	Uploads  *uploads.UploadService
+	Self     *selfapi.SelfService
 
 	Me      *types.User
 	mu      sync.RWMutex
@@ -70,6 +72,7 @@ func NewWebClient(cfg *Config) *WebClient {
 	wc.Chats = chats.NewChatService(wc)
 	wc.Users = users.NewUserService(wc)
 	wc.Uploads = uploads.NewUploadService(wc)
+	wc.Self = selfapi.NewSelfService(wc)
 
 	return wc
 }
@@ -82,6 +85,41 @@ func (wc *WebClient) OnMessage(handler func(ctx context.Context, msg *types.Mess
 // OnStart registers an on_start listener.
 func (wc *WebClient) OnStart(handler func(ctx context.Context) error) {
 	wc.router.OnStart(handler)
+}
+
+// OnMessageEdit registers a handler for message edit events.
+func (wc *WebClient) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error) {
+	wc.router.OnMessageEdit(handler)
+}
+
+// OnMessageDelete registers a handler for message delete events.
+func (wc *WebClient) OnMessageDelete(handler func(ctx context.Context, chatID, msgID int64) error) {
+	wc.router.OnMessageDelete(handler)
+}
+
+// OnReaction registers a handler for reaction add/remove events.
+func (wc *WebClient) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error) {
+	wc.router.OnReaction(handler)
+}
+
+// OnChatUpdate registers a handler for chat metadata update events.
+func (wc *WebClient) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error) {
+	wc.router.OnChatUpdate(handler)
+}
+
+// OnPresence registers a handler for user online/offline status events.
+func (wc *WebClient) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error) {
+	wc.router.OnPresence(handler)
+}
+
+// OnTyping registers a handler for user typing indicator events.
+func (wc *WebClient) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error) {
+	wc.router.OnTyping(handler)
+}
+
+// OnDisconnect registers a handler called when the client disconnects.
+func (wc *WebClient) OnDisconnect(handler func(ctx context.Context, err error)) {
+	wc.router.OnDisconnect(handler)
 }
 
 // Invoke implements api.Invoker.
@@ -106,7 +144,6 @@ func (wc *WebClient) Invoke(ctx context.Context, op protocol.Opcode, payload int
 	return inbound.Payload, nil
 }
 
-// Start connects via WebSocket, handles QR authentication, and runs the client loop.
 // Start connects via WebSocket, handles QR authentication, and runs the client loop.
 // If Reconnect is enabled, it automatically re-establishes connection on drops.
 func (wc *WebClient) Start(ctx context.Context) error {
@@ -226,8 +263,15 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 
 	wc.Me = &types.User{}
 	if profileData, ok := loginRes["profile"].(map[string]interface{}); ok {
-		if id, ok := profileData["id"].(int64); ok {
+		src := profileData
+		if contact, ok := profileData["contact"].(map[string]interface{}); ok {
+			src = contact
+		}
+		if id, ok := extractInt64(src["id"]); ok {
 			wc.Me.ID = id
+		}
+		if fn, ok := src["firstName"].(string); ok {
+			wc.Me.FirstName = fn
 		}
 	}
 
@@ -236,29 +280,192 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		_ = connManager.Close()
+		wc.router.DispatchDisconnect(ctx, ctx.Err())
 		return ctx.Err()
 	case disErr := <-disconnectCh:
 		_ = connManager.Close()
+		wc.router.DispatchDisconnect(ctx, disErr)
 		return disErr
 	}
 }
 
+// parseMessage extracts a full types.Message from a raw payload map for WebClient.
+func (wc *WebClient) parseMessage(payload map[string]interface{}) *types.Message {
+	src := payload
+	if nested, ok := payload["message"].(map[string]interface{}); ok {
+		src = nested
+	}
+
+	msg := &types.Message{Time: time.Now().Unix()}
+
+	if id, ok := extractInt64(src["id"]); ok {
+		msg.ID = id
+	}
+	if cid, ok := extractInt64(src["cid"]); ok {
+		msg.CID = cid
+	}
+	if chatID, ok := extractInt64(src["chatId"]); ok {
+		msg.ChatID = chatID
+	}
+	if sender, ok := extractInt64(src["sender"]); ok {
+		msg.SenderID = sender
+	} else if sender, ok := extractInt64(src["senderId"]); ok {
+		msg.SenderID = sender
+	}
+	if text, ok := src["text"].(string); ok {
+		msg.Text = text
+	}
+	if ts, ok := src["time"].(float64); ok {
+		msg.Time = int64(ts)
+	} else if ts, ok := extractInt64(src["time"]); ok {
+		msg.Time = ts
+	}
+	if replyTo, ok := extractInt64(src["replyTo"]); ok {
+		msg.ReplyToMsgID = replyTo
+	}
+
+	wc.mu.RLock()
+	me := wc.Me
+	wc.mu.RUnlock()
+	if me != nil && msg.SenderID != 0 && msg.SenderID == me.ID {
+		msg.IsOutgoing = true
+	}
+
+	// Parse attachments
+	if rawAttaches, ok := src["attaches"].([]interface{}); ok {
+		for _, item := range rawAttaches {
+			if aData, ok := item.(map[string]interface{}); ok {
+				attach := types.Attachment{}
+				if t, ok := aData["type"].(string); ok {
+					attach.Type = types.AttachmentType(t)
+				}
+				if url, ok := aData["url"].(string); ok {
+					attach.URL = url
+				}
+				if token, ok := aData["token"].(string); ok {
+					attach.Token = token
+				}
+				if id, ok := aData["id"].(string); ok {
+					attach.ID = id
+				}
+				if fname, ok := aData["fileName"].(string); ok {
+					attach.FileName = fname
+				}
+				if size, ok := aData["fileSize"].(float64); ok {
+					attach.FileSize = int64(size)
+				}
+				if dur, ok := aData["duration"].(float64); ok {
+					attach.Duration = int(dur)
+				}
+				msg.Attachments = append(msg.Attachments, attach)
+			}
+		}
+	}
+
+	return msg
+}
+
+// handleEvent dispatches inbound server push frames to registered handlers.
 func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
-	if frame.Opcode == protocol.OpMsgSend || frame.Opcode == protocol.OpChatHistory {
-		mData := frame.Payload
-		msg := &types.Message{
-			Time: time.Now().Unix(),
+	ctx := wc.ctx
+	if ctx == nil {
+		return
+	}
+
+	switch frame.Opcode {
+	case protocol.OpMsgSend, protocol.OpNotifMessage:
+		msg := wc.parseMessage(frame.Payload)
+		if msg.ChatID != 0 || msg.ID != 0 {
+			wc.router.DispatchMessage(ctx, msg)
 		}
-		if id, ok := mData["id"].(int64); ok {
-			msg.ID = id
+
+	case protocol.OpChatHistory:
+		if msgList, ok := frame.Payload["messages"].([]interface{}); ok {
+			for _, item := range msgList {
+				if mData, ok := item.(map[string]interface{}); ok {
+					msg := wc.parseMessage(mData)
+					wc.router.DispatchMessage(ctx, msg)
+				}
+			}
+		} else {
+			msg := wc.parseMessage(frame.Payload)
+			if msg.ID != 0 {
+				wc.router.DispatchMessage(ctx, msg)
+			}
 		}
-		if text, ok := mData["text"].(string); ok {
-			msg.Text = text
+
+	case protocol.OpMsgEdit:
+		msg := wc.parseMessage(frame.Payload)
+		wc.router.DispatchMessageEdit(ctx, msg)
+
+	case protocol.OpMsgDelete, protocol.OpNotifMsgDelete:
+		chatID, _ := extractInt64(frame.Payload["chatId"])
+		msgID, _ := extractInt64(frame.Payload["messageId"])
+		if msgID == 0 {
+			msgID, _ = extractInt64(frame.Payload["id"])
 		}
-		if chatID, ok := mData["chatId"].(int64); ok {
-			msg.ChatID = chatID
+		wc.router.DispatchMessageDelete(ctx, chatID, msgID)
+
+	case protocol.OpMsgReaction, protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
+		ev := &types.ReactionEvent{}
+		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if rData, ok := frame.Payload["reaction"].(map[string]interface{}); ok {
+			if id, ok := rData["id"].(string); ok {
+				ev.Reaction = id
+			}
+		} else if r, ok := frame.Payload["reaction"].(string); ok {
+			ev.Reaction = r
 		}
-		wc.router.DispatchMessage(wc.ctx, msg)
+		if removed, ok := frame.Payload["removed"].(bool); ok {
+			ev.Removed = removed
+		}
+		wc.router.DispatchReaction(ctx, ev)
+
+	case protocol.OpChatUpdate, protocol.OpNotifChat:
+		chat := &types.Chat{}
+		src := frame.Payload
+		if cData, ok := frame.Payload["chat"].(map[string]interface{}); ok {
+			src = cData
+		}
+		if id, ok := extractInt64(src["id"]); ok {
+			chat.ID = id
+		}
+		if title, ok := src["title"].(string); ok {
+			chat.Title = title
+		}
+		if isChannel, ok := src["isChannel"].(bool); ok {
+			chat.IsChannel = isChannel
+		}
+		wc.router.DispatchChatUpdate(ctx, chat)
+
+	case protocol.OpContactPresence, protocol.OpNotifPresence:
+		ev := &types.PresenceEvent{}
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if online, ok := frame.Payload["online"].(bool); ok {
+			ev.Online = online
+		} else if status, ok := frame.Payload["status"].(string); ok {
+			ev.Online = (status == "online" || status == "ONLINE")
+		}
+		wc.router.DispatchPresence(ctx, ev)
+
+	case protocol.OpMsgTyping, protocol.OpNotifTyping:
+		ev := &types.TypingEvent{}
+		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if ev.UserID == 0 {
+			ev.UserID, _ = extractInt64(frame.Payload["sender"])
+		}
+		wc.router.DispatchTyping(ctx, ev)
+
+	default:
+		if frame.Cmd == protocol.CmdEvent {
+			wc.router.DispatchEvent(ctx, &types.RawEvent{
+				Opcode:  uint16(frame.Opcode),
+				Payload: frame.Payload,
+			})
+		}
 	}
 }
 

@@ -266,3 +266,79 @@ func (s *ChatService) ReworkInviteLink(ctx context.Context, chatID int64) (strin
 	}
 	return "", nil
 }
+
+// GetChatInfo retrieves metadata (title, type, members count, etc.) for a specific chat.
+func (s *ChatService) GetChatInfo(ctx context.Context, chatID int64) (*types.Chat, error) {
+	payload := map[string]interface{}{
+		"chatId": chatID,
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpChatInfo, payload)
+	if err != nil {
+		return nil, fmt.Errorf("get chat info failed: %w", err)
+	}
+
+	chat := &types.Chat{ID: chatID}
+	src := res
+	if cData, ok := res["chat"].(map[string]interface{}); ok {
+		src = cData
+	}
+	if id, ok := src["id"].(int64); ok {
+		chat.ID = id
+	} else if idF, ok := src["id"].(float64); ok {
+		chat.ID = int64(idF)
+	}
+	if title, ok := src["title"].(string); ok {
+		chat.Title = title
+	}
+	if desc, ok := src["description"].(string); ok {
+		chat.Description = desc
+	}
+	if isChannel, ok := src["isChannel"].(bool); ok {
+		chat.IsChannel = isChannel
+	}
+	if isPublic, ok := src["isPublic"].(bool); ok {
+		chat.IsPublic = isPublic
+	}
+	if count, ok := src["membersCount"].(float64); ok {
+		chat.MembersCount = int(count)
+	}
+	return chat, nil
+}
+
+// PublicSearch searches public channels and groups by query string.
+func (s *ChatService) PublicSearch(ctx context.Context, query string, count int) ([]types.Chat, error) {
+	if count <= 0 {
+		count = 20
+	}
+	payload := map[string]interface{}{
+		"query": query,
+		"count": count,
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpPublicSearch, payload)
+	if err != nil {
+		return nil, fmt.Errorf("public search failed: %w", err)
+	}
+
+	var chats []types.Chat
+	if rawList, ok := res["chats"].([]interface{}); ok {
+		for _, item := range rawList {
+			if cData, ok := item.(map[string]interface{}); ok {
+				chat := types.Chat{}
+				if id, ok := cData["id"].(int64); ok {
+					chat.ID = id
+				} else if idF, ok := cData["id"].(float64); ok {
+					chat.ID = int64(idF)
+				}
+				if title, ok := cData["title"].(string); ok {
+					chat.Title = title
+				}
+				if desc, ok := cData["description"].(string); ok {
+					chat.Description = desc
+				}
+				chats = append(chats, chat)
+			}
+		}
+	}
+	return chats, nil
+}
+

@@ -24,6 +24,11 @@ type PasswordProvider interface {
 	GetPassword(ctx context.Context) (string, error)
 }
 
+// PasswordProviderWithHint optionally allows 2FA password retrieval with server-provided hint.
+type PasswordProviderWithHint interface {
+	GetPasswordWithHint(ctx context.Context, hint string) (string, error)
+}
+
 // QrHandler handles presentation of QR code.
 type QrHandler interface {
 	HandleQr(ctx context.Context, qrURL string) error
@@ -35,30 +40,49 @@ type DeviceInfoProvider interface {
 	GetCallsSeed() int64
 }
 
+func readLineWithContext(ctx context.Context, prompt string) (string, error) {
+	fmt.Print(prompt)
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		text, err := reader.ReadString('\n')
+		ch <- result{text: text, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-ch:
+		if res.err != nil {
+			return "", res.err
+		}
+		return strings.TrimSpace(res.text), nil
+	}
+}
+
 // ConsoleCodeProvider prompts user on console for SMS code.
 type ConsoleCodeProvider struct{}
 
 func (p *ConsoleCodeProvider) GetCode(ctx context.Context) (string, error) {
-	fmt.Print("Enter SMS verification code: ")
-	reader := bufio.NewReader(os.Stdin)
-	text, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(text), nil
+	return readLineWithContext(ctx, "Enter SMS verification code: ")
 }
 
 // ConsolePasswordProvider prompts user on console for 2FA password.
 type ConsolePasswordProvider struct{}
 
 func (p *ConsolePasswordProvider) GetPassword(ctx context.Context) (string, error) {
-	fmt.Print("Enter 2FA password: ")
-	reader := bufio.NewReader(os.Stdin)
-	text, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
+	return readLineWithContext(ctx, "Enter 2FA password: ")
+}
+
+func (p *ConsolePasswordProvider) GetPasswordWithHint(ctx context.Context, hint string) (string, error) {
+	if hint != "" {
+		return readLineWithContext(ctx, fmt.Sprintf("Enter 2FA password (hint: %s): ", hint))
 	}
-	return strings.TrimSpace(text), nil
+	return p.GetPassword(ctx)
 }
 
 // ConsoleQrHandler prints QR code URL to console.
@@ -138,8 +162,27 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		return nil, fmt.Errorf("request auth code failed: %w", err)
 	}
 
+	// Validate response does not contain an API validation error or rate limit
+	if errVal, ok := reqRes["error"]; ok && errVal != nil {
+		msg := reqRes["message"]
+		if msg == nil {
+			msg = reqRes["localizedMessage"]
+		}
+		return nil, fmt.Errorf("auth request rejected by server: %v (message: %v)", errVal, msg)
+	}
+	if errVal, ok := reqRes["err"]; ok && errVal != nil {
+		return nil, fmt.Errorf("auth request error from server: %v", errVal)
+	}
+
 	// Save challenge token returned by OpAuthRequest
 	challengeToken, _ := reqRes["token"].(string)
+	if challengeToken == "" {
+		if tid, ok := reqRes["trackId"].(string); ok && tid != "" {
+			challengeToken = tid
+		} else if tid, ok := reqRes["track_id"].(string); ok && tid != "" {
+			challengeToken = tid
+		}
+	}
 	if challengeToken == "" {
 		return nil, fmt.Errorf("server did not return challenge token in auth request response: %v", reqRes)
 	}
@@ -158,6 +201,8 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 	}
 	res, err := invoker.Invoke(ctx, protocol.OpAuth, submitPayload)
 
+	token, isRegister := extractToken(res)
+
 	// Check for 2FA password challenge (either in response or via error)
 	var passwordChallenge map[string]interface{}
 	if res != nil {
@@ -168,22 +213,46 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		}
 	}
 
+	hasPasswordTrack := false
+	var challengeTrackID string
+	var challengeHint string
+	if passwordChallenge != nil {
+		if tid, ok := passwordChallenge["trackId"].(string); ok && tid != "" {
+			challengeTrackID = tid
+			hasPasswordTrack = true
+		} else if tid, ok := passwordChallenge["track_id"].(string); ok && tid != "" {
+			challengeTrackID = tid
+			hasPasswordTrack = true
+		}
+		if h, ok := passwordChallenge["hint"].(string); ok {
+			challengeHint = h
+		}
+	}
+
 	is2FAError := err != nil && (strings.Contains(err.Error(), "PASSWORD") || strings.Contains(err.Error(), "2FA"))
 
-	if passwordChallenge != nil || is2FAError {
-		log.Printf("[gomax] 2FA password challenge detected; requesting password...")
-		pwd, pErr := f.PasswordProvider.GetPassword(ctx)
-		if pErr != nil {
-			return nil, fmt.Errorf("get 2fa password failed: %w", pErr)
+	// Only invoke 2FA if login token wasn't already received and a challenge is present
+	if token == "" && (hasPasswordTrack || is2FAError) {
+		trackID := challengeTrackID
+		if trackID == "" {
+			trackID = challengeToken
 		}
 
-		trackID := challengeToken
-		if passwordChallenge != nil {
-			if tid, ok := passwordChallenge["trackId"].(string); ok && tid != "" {
-				trackID = tid
-			} else if tid, ok := passwordChallenge["track_id"].(string); ok && tid != "" {
-				trackID = tid
-			}
+		if challengeHint != "" {
+			log.Printf("[gomax] 2FA password challenge detected (hint: %s); requesting password...", challengeHint)
+		} else {
+			log.Printf("[gomax] 2FA password challenge detected; requesting password...")
+		}
+
+		var pwd string
+		var pErr error
+		if pwh, ok := f.PasswordProvider.(PasswordProviderWithHint); ok {
+			pwd, pErr = pwh.GetPasswordWithHint(ctx, challengeHint)
+		} else {
+			pwd, pErr = f.PasswordProvider.GetPassword(ctx)
+		}
+		if pErr != nil {
+			return nil, fmt.Errorf("get 2fa password failed: %w", pErr)
 		}
 
 		log.Printf("[gomax] Submitting 2FA password (AUTH_LOGIN_CHECK_PASSWORD)...")
@@ -205,11 +274,34 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 				return nil, fmt.Errorf("2fa auth failed: %w", err)
 			}
 		}
-	} else if err != nil {
-		return nil, fmt.Errorf("submit auth code failed: %w", err)
+
+		// Check for 2FA validation error in response
+		if errVal, ok := res["error"]; ok && errVal != nil {
+			msg := res["message"]
+			if msg == nil {
+				msg = res["localizedMessage"]
+			}
+			return nil, fmt.Errorf("2fa password rejected by server: %v (message: %v)", errVal, msg)
+		}
+
+		token, isRegister = extractToken(res)
+	} else if token == "" {
+		// No 2FA and no token: check for error response
+		if errVal, ok := res["error"]; ok && errVal != nil {
+			msg := res["message"]
+			if msg == nil {
+				msg = res["localizedMessage"]
+			}
+			return nil, fmt.Errorf("verification code rejected by server: %v (message: %v)", errVal, msg)
+		}
+		if errVal, ok := res["err"]; ok && errVal != nil {
+			return nil, fmt.Errorf("verification code error from server: %v", errVal)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("submit auth code failed: %w", err)
+		}
 	}
 
-	token, isRegister := extractToken(res)
 	if token == "" {
 		return nil, fmt.Errorf("authentication completed without login or register token: %v", res)
 	}
@@ -227,6 +319,8 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		uid = int64(uF)
 	} else if uI, ok := res["userId"].(int); ok {
 		uid = int64(uI)
+	} else if uU, ok := res["userId"].(uint64); ok {
+		uid = int64(uU)
 	} else if u, ok := res["userToken"].(int64); ok {
 		uid = u
 	} else if uF, ok := res["userToken"].(float64); ok {
@@ -242,33 +336,49 @@ func extractToken(res map[string]interface{}) (string, bool) {
 		return "", false
 	}
 
-	// 1. Check tokenAttrs (PyMax format: tokenAttrs.LOGIN.token or tokenAttrs.REGISTER.token)
-	if attrs, ok := res["tokenAttrs"].(map[string]interface{}); ok {
-		for _, key := range []string{"LOGIN", "login"} {
+	// 1. Check tokenAttrs / token_attrs (PyMax format: tokenAttrs.LOGIN.token or tokenAttrs.REGISTER.token)
+	var attrs map[string]interface{}
+	if a, ok := res["tokenAttrs"].(map[string]interface{}); ok {
+		attrs = a
+	} else if a, ok := res["token_attrs"].(map[string]interface{}); ok {
+		attrs = a
+	}
+
+	if attrs != nil {
+		for _, key := range []string{"LOGIN", "login", "loginToken", "login_token"} {
 			if loginObj, ok := attrs[key].(map[string]interface{}); ok {
-				if t, ok := loginObj["token"].(string); ok && t != "" {
-					return t, false
+				for _, tKey := range []string{"token", "value", "t"} {
+					if t, ok := loginObj[tKey].(string); ok && t != "" {
+						return t, false
+					}
 				}
+			} else if t, ok := attrs[key].(string); ok && t != "" {
+				return t, false
 			}
 		}
 		for _, key := range []string{"REGISTER", "register", "registerToken", "register_token"} {
 			if regObj, ok := attrs[key].(map[string]interface{}); ok {
-				if t, ok := regObj["token"].(string); ok && t != "" {
-					return t, true
+				for _, tKey := range []string{"token", "value", "t"} {
+					if t, ok := regObj[tKey].(string); ok && t != "" {
+						return t, true
+					}
 				}
+			} else if t, ok := attrs[key].(string); ok && t != "" {
+				return t, true
 			}
 		}
 	}
 
 	// 2. Direct top-level fields
-	if t, ok := res["token"].(string); ok && t != "" {
-		return t, false
+	for _, key := range []string{"token", "loginToken", "login_token"} {
+		if t, ok := res[key].(string); ok && t != "" {
+			return t, false
+		}
 	}
-	if t, ok := res["loginToken"].(string); ok && t != "" {
-		return t, false
-	}
-	if t, ok := res["registerToken"].(string); ok && t != "" {
-		return t, true
+	for _, key := range []string{"registerToken", "register_token"} {
+		if t, ok := res[key].(string); ok && t != "" {
+			return t, true
+		}
 	}
 
 	return "", false

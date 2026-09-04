@@ -35,6 +35,52 @@ type (
 
 	// Attachment represents a media attachment.
 	Attachment = types.Attachment
+
+	// AttachmentType classifies the kind of media attachment.
+	AttachmentType = types.AttachmentType
+
+	// ReactionEvent represents a reaction add/remove notification.
+	ReactionEvent = types.ReactionEvent
+
+	// PresenceEvent represents a user online/offline status notification.
+	PresenceEvent = types.PresenceEvent
+
+	// TypingEvent represents a user typing indicator.
+	TypingEvent = types.TypingEvent
+
+	// Folder represents a chat filter/folder.
+	Folder = types.Folder
+
+	// FolderList represents a list of chat folders.
+	FolderList = types.FolderList
+
+	// PollOption represents a poll answer choice.
+	PollOption = types.PollOption
+
+	// Poll represents a poll message object.
+	Poll = types.Poll
+
+	// ChatType classifies the chat kind.
+	ChatType = types.ChatType
+)
+
+// Attachment type constants re-exported for convenience.
+const (
+	AttachmentPhoto     = types.AttachmentPhoto
+	AttachmentVideo     = types.AttachmentVideo
+	AttachmentAudio     = types.AttachmentAudio
+	AttachmentFile      = types.AttachmentFile
+	AttachmentVoice     = types.AttachmentVoice
+	AttachmentVideoNote = types.AttachmentVideoNote
+	AttachmentPoll      = types.AttachmentPoll
+	AttachmentSticker   = types.AttachmentSticker
+)
+
+// Chat type constants re-exported for convenience.
+const (
+	ChatTypeDialog  = types.ChatTypeDialog
+	ChatTypeChat    = types.ChatTypeChat
+	ChatTypeChannel = types.ChatTypeChannel
 )
 
 // NewClient creates a new TCP Max client matching PyMax Client.

@@ -245,6 +245,9 @@ func (m *ConnectionManager) SendEvent(ctx context.Context, opcode protocol.Opcod
 
 // SendRequest sends a request frame and awaits the correlated response matching seq.
 func (m *ConnectionManager) SendRequest(ctx context.Context, opcode protocol.Opcode, payload any) (*protocol.InboundFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !m.IsOpen() {
 		return nil, ErrConnectionNotOpen
 	}
@@ -284,6 +287,11 @@ func (m *ConnectionManager) SendRequest(ctx context.Context, opcode protocol.Opc
 	select {
 	case <-reqCtx.Done():
 		return nil, reqCtx.Err()
+	case <-m.closedCh:
+		if ptr := m.closedErr.Load(); ptr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrConnectionClosed, *ptr)
+		}
+		return nil, ErrConnectionClosed
 	case resp, ok := <-ch:
 		if !ok || resp == nil {
 			if !m.IsOpen() {

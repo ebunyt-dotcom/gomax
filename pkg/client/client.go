@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
+	selfapi "github.com/ebunyt-dotcom/gomax/pkg/api/selfapi"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/uploads"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/users"
 	"github.com/ebunyt-dotcom/gomax/pkg/auth"
@@ -24,6 +27,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
+
 
 // Config configures client network endpoints and session behavior.
 type Config struct {
@@ -74,6 +78,7 @@ type Client struct {
 	Chats    *chats.ChatService
 	Users    *users.UserService
 	Uploads  *uploads.UploadService
+	Self     *selfapi.SelfService
 
 	Me      *types.User
 	mu      sync.RWMutex
@@ -97,6 +102,67 @@ func (c *Client) GetDeviceID() string {
 // GetCallsSeed returns the handshake callsSeed.
 func (c *Client) GetCallsSeed() int64 {
 	return c.CallsSeed()
+}
+
+// NonRecoverableError indicates an error that should terminate client.Start immediately without reconnecting.
+type NonRecoverableError struct {
+	Err error
+}
+
+func (e *NonRecoverableError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *NonRecoverableError) Unwrap() error {
+	return e.Err
+}
+
+func nonRecoverable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &NonRecoverableError{Err: err}
+}
+
+func extractInt64(val any) (int64, bool) {
+	if val == nil {
+		return 0, false
+	}
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case uint64:
+		return int64(v), true
+	case uint:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint8:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case string:
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i, true
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func randomHex(n int) string {
@@ -145,6 +211,7 @@ func NewClient(cfg *Config) *Client {
 	c.Chats = chats.NewChatService(c)
 	c.Users = users.NewUserService(c)
 	c.Uploads = uploads.NewUploadService(c)
+	c.Self = selfapi.NewSelfService(c)
 
 	return c
 }
@@ -158,6 +225,42 @@ func (c *Client) OnMessage(handler func(ctx context.Context, msg *types.Message)
 func (c *Client) OnStart(handler func(ctx context.Context) error) {
 	c.router.OnStart(handler)
 }
+
+// OnMessageEdit registers a handler for message edit events.
+func (c *Client) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error) {
+	c.router.OnMessageEdit(handler)
+}
+
+// OnMessageDelete registers a handler for message delete events.
+func (c *Client) OnMessageDelete(handler func(ctx context.Context, chatID, msgID int64) error) {
+	c.router.OnMessageDelete(handler)
+}
+
+// OnReaction registers a handler for reaction add/remove events.
+func (c *Client) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error) {
+	c.router.OnReaction(handler)
+}
+
+// OnChatUpdate registers a handler for chat metadata update events.
+func (c *Client) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error) {
+	c.router.OnChatUpdate(handler)
+}
+
+// OnPresence registers a handler for user online/offline status events.
+func (c *Client) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error) {
+	c.router.OnPresence(handler)
+}
+
+// OnTyping registers a handler for user typing indicator events.
+func (c *Client) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error) {
+	c.router.OnTyping(handler)
+}
+
+// OnDisconnect registers a handler called when the client disconnects.
+func (c *Client) OnDisconnect(handler func(ctx context.Context, err error)) {
+	c.router.OnDisconnect(handler)
+}
+
 
 // Invoke implements the api.Invoker interface for RPC commands.
 func (c *Client) Invoke(ctx context.Context, op protocol.Opcode, payload interface{}) (map[string]interface{}, error) {
@@ -201,6 +304,11 @@ func (c *Client) Start(ctx context.Context) error {
 		err := c.runSession(c.ctx)
 		if err == nil || errors.Is(err, context.Canceled) || c.ctx.Err() != nil {
 			return nil
+		}
+
+		var nre *NonRecoverableError
+		if errors.As(err, &nre) {
+			return err
 		}
 
 		if !c.cfg.Reconnect {
@@ -268,19 +376,26 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 	log.Printf("[gomax] Connected to Max server successfully")
 
+	if c.fpGen == nil {
+		c.fpGen = fingerprint.NewFingerprintGenerator(fingerprint.DefaultFingerprint())
+	}
+
 	// Load session info to reuse deviceId and mt_instanceid if previously saved
 	sessInfo, err := c.store.LoadSession()
 	if err != nil {
 		_ = connManager.Close()
-		return fmt.Errorf("failed to load session: %w", err)
+		return nonRecoverable(fmt.Errorf("failed to load session: %w", err))
 	}
 
 	if sessInfo != nil {
-		if sessInfo.DeviceID != "" {
+		if c.cfg.DeviceID == "" && sessInfo.DeviceID != "" {
 			c.cfg.DeviceID = sessInfo.DeviceID
 		}
-		if sessInfo.MTInstanceID != "" {
+		if c.cfg.MtInstanceID == "" && sessInfo.MTInstanceID != "" {
 			c.cfg.MtInstanceID = sessInfo.MTInstanceID
+		}
+		if c.cfg.Phone == "" && sessInfo.Phone != "" {
+			c.cfg.Phone = sessInfo.Phone
 		}
 	}
 	if c.cfg.DeviceID == "" {
@@ -327,24 +442,24 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 
 	// Validate response does not contain an API validation error
-	if errMsg, ok := initRes["error"].(string); ok && errMsg != "" {
+	if errVal, ok := initRes["error"]; ok && errVal != nil {
 		_ = connManager.Close()
-		return fmt.Errorf("session init validation error from server: %s (message: %v)", errMsg, initRes["message"])
+		msg := initRes["message"]
+		if msg == nil {
+			msg = initRes["localizedMessage"]
+		}
+		return nonRecoverable(fmt.Errorf("session init validation error from server: %v (message: %v)", errVal, msg))
 	}
-	if errCode, ok := initRes["err"].(string); ok && errCode != "" {
+	if errVal, ok := initRes["err"]; ok && errVal != nil {
 		_ = connManager.Close()
-		return fmt.Errorf("session init error from server: %s", errCode)
+		return nonRecoverable(fmt.Errorf("session init error from server: %v", errVal))
 	}
 
 	var callsSeed int64
-	if cs, ok := initRes["callsSeed"].(int64); ok {
+	if cs, ok := extractInt64(initRes["callsSeed"]); ok {
 		callsSeed = cs
-	} else if csF, ok := initRes["callsSeed"].(float64); ok {
-		callsSeed = int64(csF)
-	} else if csI, ok := initRes["callsSeed"].(int); ok {
-		callsSeed = int64(csI)
-	} else if csU, ok := initRes["callsSeed"].(uint64); ok {
-		callsSeed = int64(csU)
+	} else if cs, ok := extractInt64(initRes["calls_seed"]); ok {
+		callsSeed = cs
 	}
 
 	c.mu.Lock()
@@ -362,7 +477,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	if token == "" {
 		if c.cfg.Phone == "" {
 			_ = connManager.Close()
-			return errors.New("phone number required for initial authentication")
+			return nonRecoverable(errors.New("phone number required for initial authentication"))
 		}
 		log.Printf("[gomax] No active session token found; starting SMS authentication for %s...", c.cfg.Phone)
 		smsFlow := c.cfg.AuthFlow
@@ -384,7 +499,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		authRes, err := smsFlow.Authenticate(ctx, c, c.cfg.Phone)
 		if err != nil {
 			_ = connManager.Close()
-			return fmt.Errorf("authentication failed: %w", err)
+			return nonRecoverable(fmt.Errorf("authentication failed: %w", err))
 		}
 		token = authRes.Token
 		_ = c.store.SaveSession(&session.SessionInfo{
@@ -424,6 +539,16 @@ func (c *Client) runSession(ctx context.Context) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
+	// Validate login response for server rejection
+	if errVal, ok := loginRes["error"]; ok && errVal != nil {
+		_ = connManager.Close()
+		msg := loginRes["message"]
+		if msg == nil {
+			msg = loginRes["localizedMessage"]
+		}
+		return nonRecoverable(fmt.Errorf("login rejected by server: %v (message: %v)", errVal, msg))
+	}
+
 	// If token refreshed
 	if newToken, ok := loginRes["token"].(string); ok && newToken != "" && newToken != token {
 		token = newToken
@@ -437,12 +562,8 @@ func (c *Client) runSession(ctx context.Context) error {
 		if contactData, ok := profileData["contact"].(map[string]interface{}); ok {
 			userData = contactData
 		}
-		if id, ok := userData["id"].(int64); ok {
+		if id, ok := extractInt64(userData["id"]); ok {
 			c.Me.ID = id
-		} else if idF, ok := userData["id"].(float64); ok {
-			c.Me.ID = int64(idF)
-		} else if idI, ok := userData["id"].(int); ok {
-			c.Me.ID = int64(idI)
 		}
 		if fn, ok := userData["firstName"].(string); ok {
 			c.Me.FirstName = fn
@@ -454,12 +575,8 @@ func (c *Client) runSession(ctx context.Context) error {
 			c.Me.Phone = ph
 		}
 	} else if userMap, ok := loginRes["user"].(map[string]interface{}); ok {
-		if id, ok := userMap["id"].(int64); ok {
+		if id, ok := extractInt64(userMap["id"]); ok {
 			c.Me.ID = id
-		} else if idF, ok := userMap["id"].(float64); ok {
-			c.Me.ID = int64(idF)
-		} else if idI, ok := userMap["id"].(int); ok {
-			c.Me.ID = int64(idI)
 		}
 		if fn, ok := userMap["firstName"].(string); ok {
 			c.Me.FirstName = fn
@@ -475,39 +592,210 @@ func (c *Client) runSession(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		_ = connManager.Close()
+		c.router.DispatchDisconnect(ctx, ctx.Err())
 		return ctx.Err()
 	case disErr := <-disconnectCh:
 		_ = connManager.Close()
+		c.router.DispatchDisconnect(ctx, disErr)
 		return disErr
 	}
 }
 
+// parseMessage extracts a full types.Message from a raw payload map.
+// msgPayload may be the top-level frame payload or a nested "message" sub-object.
+func (c *Client) parseMessage(payload map[string]interface{}) *types.Message {
+	src := payload
+	if nested, ok := payload["message"].(map[string]interface{}); ok {
+		src = nested
+	}
+
+	msg := &types.Message{Time: time.Now().Unix()}
+
+	if id, ok := extractInt64(src["id"]); ok {
+		msg.ID = id
+	}
+	if cid, ok := extractInt64(src["cid"]); ok {
+		msg.CID = cid
+	}
+	if chatID, ok := extractInt64(src["chatId"]); ok {
+		msg.ChatID = chatID
+	}
+	if sender, ok := extractInt64(src["sender"]); ok {
+		msg.SenderID = sender
+	} else if sender, ok := extractInt64(src["senderId"]); ok {
+		msg.SenderID = sender
+	}
+	if text, ok := src["text"].(string); ok {
+		msg.Text = text
+	}
+	if ts, ok := src["time"].(float64); ok {
+		msg.Time = int64(ts)
+	} else if ts, ok := extractInt64(src["time"]); ok {
+		msg.Time = ts
+	}
+	if replyTo, ok := extractInt64(src["replyTo"]); ok {
+		msg.ReplyToMsgID = replyTo
+	}
+	if editedAt, ok := extractInt64(src["editedAt"]); ok {
+		msg.EditedAt = editedAt
+	}
+	if pinned, ok := src["isPinned"].(bool); ok {
+		msg.IsPinned = pinned
+	}
+
+	// Mark as outgoing if sender matches logged-in user
+	c.mu.RLock()
+	me := c.Me
+	c.mu.RUnlock()
+	if me != nil && msg.SenderID != 0 && msg.SenderID == me.ID {
+		msg.IsOutgoing = true
+	}
+
+	// Parse attachments
+	if rawAttaches, ok := src["attaches"].([]interface{}); ok {
+		for _, item := range rawAttaches {
+			if aData, ok := item.(map[string]interface{}); ok {
+				attach := types.Attachment{}
+				if t, ok := aData["type"].(string); ok {
+					attach.Type = types.AttachmentType(t)
+				}
+				if url, ok := aData["url"].(string); ok {
+					attach.URL = url
+				}
+				if token, ok := aData["token"].(string); ok {
+					attach.Token = token
+				}
+				if id, ok := aData["id"].(string); ok {
+					attach.ID = id
+				}
+				if fname, ok := aData["fileName"].(string); ok {
+					attach.FileName = fname
+				}
+				if size, ok := aData["fileSize"].(float64); ok {
+					attach.FileSize = int64(size)
+				}
+				if dur, ok := aData["duration"].(float64); ok {
+					attach.Duration = int(dur)
+				}
+				msg.Attachments = append(msg.Attachments, attach)
+			}
+		}
+	}
+
+	return msg
+}
+
+// handleEvent dispatches inbound server push frames to registered handlers.
 func (c *Client) handleEvent(frame *protocol.InboundFrame) {
-	if frame.Opcode == protocol.OpMsgSend || frame.Opcode == protocol.OpChatHistory {
-		mData := frame.Payload
-		msg := &types.Message{
-			Time: time.Now().Unix(),
-		}
-		if id, ok := mData["id"].(int64); ok {
-			msg.ID = id
-		} else if idF, ok := mData["id"].(float64); ok {
-			msg.ID = int64(idF)
-		}
-		if text, ok := mData["text"].(string); ok {
-			msg.Text = text
-		}
-		if chatID, ok := mData["chatId"].(int64); ok {
-			msg.ChatID = chatID
-		} else if chatIDF, ok := mData["chatId"].(float64); ok {
-			msg.ChatID = int64(chatIDF)
-		}
-		if sender, ok := mData["sender"].(int64); ok {
-			msg.SenderID = sender
-		} else if senderF, ok := mData["sender"].(float64); ok {
-			msg.SenderID = int64(senderF)
+	ctx := c.ctx
+	if ctx == nil {
+		return
+	}
+
+	switch frame.Opcode {
+	// Incoming new message
+	case protocol.OpMsgSend, protocol.OpNotifMessage:
+		msg := c.parseMessage(frame.Payload)
+		if msg.ChatID != 0 || msg.ID != 0 {
+			c.router.DispatchMessage(ctx, msg)
 		}
 
-		c.router.DispatchMessage(c.ctx, msg)
+	// Bulk history push during sync
+	case protocol.OpChatHistory:
+		if msgList, ok := frame.Payload["messages"].([]interface{}); ok {
+			for _, item := range msgList {
+				if mData, ok := item.(map[string]interface{}); ok {
+					msg := c.parseMessage(mData)
+					c.router.DispatchMessage(ctx, msg)
+				}
+			}
+		} else {
+			// Single message in history event
+			msg := c.parseMessage(frame.Payload)
+			if msg.ID != 0 {
+				c.router.DispatchMessage(ctx, msg)
+			}
+		}
+
+	// Message edited
+	case protocol.OpMsgEdit:
+		msg := c.parseMessage(frame.Payload)
+		c.router.DispatchMessageEdit(ctx, msg)
+
+	// Single message deleted
+	case protocol.OpMsgDelete, protocol.OpNotifMsgDelete:
+		chatID, _ := extractInt64(frame.Payload["chatId"])
+		msgID, _ := extractInt64(frame.Payload["messageId"])
+		if msgID == 0 {
+			msgID, _ = extractInt64(frame.Payload["id"])
+		}
+		c.router.DispatchMessageDelete(ctx, chatID, msgID)
+
+	// Reaction changed on a message
+	case protocol.OpMsgReaction, protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
+		ev := &types.ReactionEvent{}
+		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if rData, ok := frame.Payload["reaction"].(map[string]interface{}); ok {
+			if id, ok := rData["id"].(string); ok {
+				ev.Reaction = id
+			}
+		} else if r, ok := frame.Payload["reaction"].(string); ok {
+			ev.Reaction = r
+		}
+		if removed, ok := frame.Payload["removed"].(bool); ok {
+			ev.Removed = removed
+		}
+		c.router.DispatchReaction(ctx, ev)
+
+	// Chat metadata updated
+	case protocol.OpChatUpdate, protocol.OpNotifChat:
+		chat := &types.Chat{}
+		src := frame.Payload
+		if cData, ok := frame.Payload["chat"].(map[string]interface{}); ok {
+			src = cData
+		}
+		if id, ok := extractInt64(src["id"]); ok {
+			chat.ID = id
+		}
+		if title, ok := src["title"].(string); ok {
+			chat.Title = title
+		}
+		if isChannel, ok := src["isChannel"].(bool); ok {
+			chat.IsChannel = isChannel
+		}
+		c.router.DispatchChatUpdate(ctx, chat)
+
+	// User presence / online status changed
+	case protocol.OpContactPresence, protocol.OpNotifPresence:
+		ev := &types.PresenceEvent{}
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if online, ok := frame.Payload["online"].(bool); ok {
+			ev.Online = online
+		} else if status, ok := frame.Payload["status"].(string); ok {
+			ev.Online = (status == "online" || status == "ONLINE")
+		}
+		c.router.DispatchPresence(ctx, ev)
+
+	// User typing indicator
+	case protocol.OpMsgTyping, protocol.OpNotifTyping:
+		ev := &types.TypingEvent{}
+		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if ev.UserID == 0 {
+			ev.UserID, _ = extractInt64(frame.Payload["sender"])
+		}
+		c.router.DispatchTyping(ctx, ev)
+
+	// Any other server push event — route as raw
+	default:
+		if frame.Cmd == protocol.CmdEvent {
+			c.router.DispatchEvent(ctx, &types.RawEvent{
+				Opcode:  uint16(frame.Opcode),
+				Payload: frame.Payload,
+			})
+		}
 	}
 }
 
@@ -528,3 +816,4 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
+

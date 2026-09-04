@@ -227,3 +227,70 @@ func (s *UserService) Set2FA(ctx context.Context, password, hint, email string) 
 	return nil
 }
 
+// AddContact adds a user to the contact list by user ID and optional name info.
+func (s *UserService) AddContact(ctx context.Context, userID int64, firstName, lastName, phone string) error {
+	payload := map[string]interface{}{
+		"userId":    userID,
+		"firstName": firstName,
+	}
+	if lastName != "" {
+		payload["lastName"] = lastName
+	}
+	if phone != "" {
+		payload["phone"] = phone
+	}
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactAdd, payload)
+	if err != nil {
+		return fmt.Errorf("add contact failed: %w", err)
+	}
+	return nil
+}
+
+// UpdateContact renames or edits an existing contact's display name.
+func (s *UserService) UpdateContact(ctx context.Context, userID int64, firstName, lastName string) error {
+	payload := map[string]interface{}{
+		"userId":    userID,
+		"firstName": firstName,
+	}
+	if lastName != "" {
+		payload["lastName"] = lastName
+	}
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, payload)
+	if err != nil {
+		return fmt.Errorf("update contact failed: %w", err)
+	}
+	return nil
+}
+
+// GetUserByPhone looks up a user profile by their phone number.
+func (s *UserService) GetUserByPhone(ctx context.Context, phone string) (*types.User, error) {
+	payload := map[string]interface{}{
+		"phone": phone,
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpContactInfoByPhone, payload)
+	if err != nil {
+		return nil, fmt.Errorf("get user by phone failed: %w", err)
+	}
+
+	user := &types.User{Phone: phone}
+	src := res
+	if uData, ok := res["user"].(map[string]interface{}); ok {
+		src = uData
+	} else if uData, ok := res["contact"].(map[string]interface{}); ok {
+		src = uData
+	}
+	if id, ok := src["id"].(int64); ok {
+		user.ID = id
+	} else if idF, ok := src["id"].(float64); ok {
+		user.ID = int64(idF)
+	}
+	if fn, ok := src["firstName"].(string); ok {
+		user.FirstName = fn
+	}
+	if ln, ok := src["lastName"].(string); ok {
+		user.LastName = ln
+	}
+	return user, nil
+}
+
+
