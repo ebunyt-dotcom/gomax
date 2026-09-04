@@ -1,0 +1,38 @@
+# Binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test and coverage artifacts
+*.test
+*.out
+
+# Python reference repo & agent workspaces
+PyMax/
+.agents/
+ORIGINAL_REQUEST.md
+
+# Session and cache data (protect tokens and private keys!)
+cache/
+*.db
+*.db-journal
+*.sqlite
+session*.json
+main.json
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
