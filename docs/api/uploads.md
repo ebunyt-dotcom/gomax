@@ -2,7 +2,7 @@
 
 Сервис доступен как `client.Uploads`. Загрузка состоит из запроса upload-slot к API и HTTP-загрузки файла.
 
-Готовый пример загрузки и отправки фото: [`examples/send_media/main.go`](../../examples/send_media/main.go).
+Готовый пример загрузки и отправки фото: [`examples/send_media/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/send_media/main.go).
 
 ## Методы
 

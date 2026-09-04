@@ -68,7 +68,7 @@ Web/QR порядок:
 | 272..277 | `OpFoldersGet` .. `OpNotifFolders` | Папки |
 | 288/289/291 | `OpGetQr` / `OpGetQrStatus` / `OpLoginByQr` | QR-вход |
 
-Полный каталог находится в [`pkg/protocol/opcode.go`](../../pkg/protocol/opcode.go).
+Полный каталог находится в [`pkg/protocol/opcode.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/pkg/protocol/opcode.go).
 
 ## Расширение API
 

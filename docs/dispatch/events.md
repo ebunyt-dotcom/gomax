@@ -2,7 +2,7 @@
 
 Обработчики регистрируются на `Client` или `WebClient` до вызова `Start`.
 
-Полный пример: [`examples/events/main.go`](../../examples/events/main.go).
+Полный пример: [`examples/events/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/events/main.go).
 
 ## Обработчики
 

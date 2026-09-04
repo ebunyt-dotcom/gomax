@@ -52,4 +52,4 @@ if err := client.Start(context.Background()); err != nil {
 }
 ```
 
-Полные примеры находятся в каталоге [`examples/`](../examples/).
+Полные примеры находятся в каталоге [`examples/`](https://github.com/ebunyt-dotcom/gomax/tree/main/examples).

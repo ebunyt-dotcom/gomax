@@ -14,7 +14,7 @@ log.Fatal(client.Start(context.Background()))
 
 При первом запуске GoMax запросит код в консоли. После успешного входа токен сохранится в сессии.
 
-Готовый пример: [`examples/sms_login/main.go`](../../examples/sms_login/main.go).
+Готовый пример: [`examples/sms_login/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/sms_login/main.go).
 
 ## Что обязательно
 

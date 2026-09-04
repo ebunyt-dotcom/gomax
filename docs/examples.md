@@ -6,12 +6,12 @@
 
 | Нужно сделать | Пример |
 |---|---|
-| Авторизоваться по SMS | [`sms_login/main.go`](../examples/sms_login/main.go) |
-| Авторизоваться по QR | [`qr_login/main.go`](../examples/qr_login/main.go) |
-| Получать события и сообщения | [`events/main.go`](../examples/events/main.go) |
-| Загрузить и отправить фото | [`send_media/main.go`](../examples/send_media/main.go) |
-| Получить свой профиль и чаты | [`profile_and_chats/main.go`](../examples/profile_and_chats/main.go) |
-| Запустить простой echo | [`quickstart/main.go`](../examples/quickstart/main.go) |
+| Авторизоваться по SMS | [`sms_login/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/sms_login/main.go) |
+| Авторизоваться по QR | [`qr_login/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/qr_login/main.go) |
+| Получать события и сообщения | [`events/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/events/main.go) |
+| Загрузить и отправить фото | [`send_media/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/send_media/main.go) |
+| Получить свой профиль и чаты | [`profile_and_chats/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/profile_and_chats/main.go) |
+| Запустить простой echo | [`quickstart/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/quickstart/main.go) |
 
 ## Как запустить
 

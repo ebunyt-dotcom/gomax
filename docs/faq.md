@@ -34,7 +34,7 @@
 
 ## Как отправить файл?
 
-Сначала прочитайте файл в []byte, затем вызовите client.Uploads.UploadFile и передайте полученное вложение в client.Messages.SendMessage. Готовый пример: [send_media](../examples/send_media/main.go).
+Сначала прочитайте файл в []byte, затем вызовите client.Uploads.UploadFile и передайте полученное вложение в client.Messages.SendMessage. Готовый пример: [send_media](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/send_media/main.go).
 
 ## Можно ли написать свой ввод SMS, пароля или QR?
 
@@ -47,4 +47,3 @@
 ## Почему pkg.go.dev показывает не последнюю версию?
 
 pkg.go.dev индексирует опубликованные версии Go-модуля. После push подождите индексацию или откройте URL пакета и запросите нужную версию. Ссылка на пакет есть в README проекта.
-
