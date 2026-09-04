@@ -1,51 +1,164 @@
 # Пользователи и контакты
 
-Сервис доступен как `client.Users`.
+Сервис: `client.Users`. В примерах `ctx`, `userID` и номера телефонов уже
+объявлены.
 
-## Методы
+## Получение пользователей
 
-| Метод | Назначение |
-|---|---|
-| `GetUser`, `GetUsers` | Получить один или несколько профилей |
-| `FetchUsers` | Пакетное получение без локального cache-контракта |
-| `GetCachedUser` | Совместимый alias получения пользователя |
-| `SearchUsers` | Поиск по имени или запросу |
-| `SearchByPhone`, `GetUserByPhone` | Поиск по номеру |
-| `GetContacts` | Получить контакты |
-| `GetSelf` | Получить свой профиль |
-| `AddContact`, `AddContactByID` | Добавить контакт |
-| `UpdateContact` | Изменить имя контакта |
-| `RemoveContact` | Удалить контакт |
-| `ImportContacts` | Импортировать номера и имена |
-| `GetChatID` | Получить детерминированный ID диалога |
-| `GetSessions`, `GetActiveSessions` | Получить устройства аккаунта |
-| `CloseSession` | Закрыть удалённую сессию |
-| `Set2FA` | Настроить 2FA |
+### `GetUser`
 
-## Поиск пользователя
+Возвращает пользователя по ID.
+
+```go
+user, err := client.Users.GetUser(ctx, userID)
+```
+
+### `GetUsers`
+
+Возвращает пользователей по нескольким ID.
+
+```go
+users, err := client.Users.GetUsers(ctx, []int64{userID, anotherUserID})
+```
+
+### `FetchUsers`
+
+Пакетно получает пользователей. Это имя сохранено для совместимости с PyMax.
+
+```go
+users, err := client.Users.FetchUsers(ctx, []int64{userID})
+```
+
+### `GetCachedUser`
+
+Совместимый alias получения одного пользователя.
+
+```go
+user, err := client.Users.GetCachedUser(ctx, userID)
+```
+
+### `SearchUsers`
+
+Ищет пользователей по имени или строке поиска.
+
+```go
+users, err := client.Users.SearchUsers(ctx, "Иван")
+```
+
+### `SearchByPhone`
+
+Ищет пользователя по номеру телефона.
 
 ```go
 user, err := client.Users.SearchByPhone(ctx, "+79990000000")
-users, err := client.Users.SearchUsers(ctx, "Иван")
+```
+
+### `GetUserByPhone`
+
+То же назначение, отдельное имя для явного сценария поиска по номеру.
+
+```go
+user, err := client.Users.GetUserByPhone(ctx, "+79990000000")
+```
+
+### `GetSelf`
+
+Возвращает профиль текущего аккаунта.
+
+```go
+me, err := client.Users.GetSelf(ctx)
+```
+
+### `GetContacts`
+
+Возвращает контакты аккаунта.
+
+```go
+contacts, err := client.Users.GetContacts(ctx)
+```
+
+### `GetChatID`
+
+Вычисляет ID личного диалога для двух пользователей. Сетевой запрос не делает.
+
+```go
+chatID := client.Users.GetChatID(ctx, firstUserID, secondUserID)
 ```
 
 ## Контакты
 
+### `AddContact`
+
+Добавляет пользователя в контакты и задаёт имя.
+
 ```go
-err := client.Users.AddContact(ctx, userID, "Ivan", "Ivanov", phone)
-err = client.Users.UpdateContact(ctx, userID, "Новое имя", "")
-err = client.Users.RemoveContact(ctx, userID)
+err := client.Users.AddContact(ctx, userID, "Ivan", "Ivanov", "+79990000000")
 ```
 
-`AddContactByID` возвращает созданный `User`; `AddContact` возвращает только ошибку.
+### `AddContactByID`
 
-## Сессии устройств
+Добавляет контакт по ID и возвращает созданного пользователя.
+
+```go
+user, err := client.Users.AddContactByID(ctx, userID)
+```
+
+### `UpdateContact`
+
+Меняет имя существующего контакта.
+
+```go
+err := client.Users.UpdateContact(ctx, userID, "Новое имя", "")
+```
+
+### `RemoveContact`
+
+Удаляет контакт.
+
+```go
+err := client.Users.RemoveContact(ctx, userID)
+```
+
+### `ImportContacts`
+
+Импортирует контакты. Ключ — номер, значение — имя.
+
+```go
+users, err := client.Users.ImportContacts(ctx, map[string]string{
+    "+79990000000": "Ivan Ivanov",
+})
+```
+
+## Сессии и 2FA
+
+### `GetSessions`
+
+Возвращает устройства и активные сессии аккаунта.
 
 ```go
 sessions, err := client.Users.GetSessions(ctx)
-for _, item := range sessions {
-    fmt.Println(item.ID, item.Device, item.IP)
-}
 ```
 
-Закрывайте только те устройства, которыми вы управляете. Текущая сессия может быть отключена сервером после этой операции.
+### `GetActiveSessions`
+
+Возвращает только активные сессии.
+
+```go
+sessions, err := client.Users.GetActiveSessions(ctx)
+```
+
+### `CloseSession`
+
+Закрывает удалённую сессию по ID. Не передавайте ID текущего устройства.
+
+```go
+err := client.Users.CloseSession(ctx, sessionID)
+```
+
+### `Set2FA`
+
+Настраивает пароль 2FA и связанные параметры.
+
+```go
+err := client.Users.Set2FA(ctx, "пароль", "подсказка", "mail@example.com")
+```

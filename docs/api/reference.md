@@ -1,41 +1,77 @@
 # Полный публичный API
 
-Этот файл — быстрый справочник публичных функций GoMax. Подробное объяснение и примеры находятся на страницах сервисов.
+Здесь перечислены экспортируемые функции и методы. Для каждого прикладного
+метода есть отдельный короткий пример на странице сервиса:
+
+- [сообщения](messages.md);
+- [чаты](chats.md);
+- [пользователи](users.md);
+- [загрузки](uploads.md);
+- [профиль](self.md);
+- [авторизация](auth.md);
+- [события](../dispatch/events.md);
+- [низкоуровневый API](low-level.md).
+
+Сигнатуры ниже сверены с исходниками. Внутренние `parse...`, `handle...` и
+тестовые helper-функции в API не входят.
 
 ## Корневой пакет gomax
 
-| Функция | Назначение |
-|---|---|
-| NewClient | Создать TCP/SMS-клиент |
-| NewWebClient | Создать WebSocket/QR-клиент |
-| DefaultConfig | Получить конфигурацию с рабочими defaults |
-| NewSmsAuthFlow | Создать SMS/2FA flow |
-| NewQrAuthFlow | Создать QR/2FA flow |
+| Функция | Что делает | Пример |
+|---|---|---|
+| `NewClient` | Создаёт TCP/SMS-клиент. | `client := gomax.NewClient(cfg)` |
+| `NewWebClient` | Создаёт WebSocket/QR-клиент. | `client := gomax.NewWebClient(cfg)` |
+| `DefaultConfig` | Возвращает конфигурацию с defaults. | `cfg := gomax.DefaultConfig()` |
+| `NewSmsAuthFlow` | Создаёт настраиваемый SMS/2FA flow. | `cfg.AuthFlow = gomax.NewSmsAuthFlow(nil, nil)` |
+| `NewQrAuthFlow` | Создаёт настраиваемый QR/2FA flow. | `cfg.QrAuthFlow = gomax.NewQrAuthFlow(nil, nil)` |
 
 ## Client и WebClient
 
-Оба клиента поддерживают:
+Оба клиента поддерживают следующие методы:
 
-| Метод | Назначение |
-|---|---|
-| Start | Подключиться, авторизоваться и запустить цикл событий |
-| Close | Закрыть соединение |
-| Invoke | Выполнить низкоуровневый RPC-вызов |
-| SetInteractive | Изменить признак активности/presence для следующего login/reconnect |
-| OnStart | Обработчик готовности клиента |
-| OnMessage | Новое сообщение |
-| OnMessageEdit | Изменение сообщения |
-| OnMessageDelete | Удаление сообщения |
-| OnMessageRead | Read-marker |
-| OnUserUpdate | Изменение контакта или профиля |
-| OnReaction | Реакция |
-| OnChatUpdate | Изменение чата |
-| OnPresence | Online-статус |
-| OnTyping | Индикатор печати |
-| OnDisconnect | Закрытие или ошибка соединения |
-| OnRaw | Нераспознанное событие |
+| Метод | Назначение | Пример |
+|---|---|---|
+| `Start` | Подключиться, авторизоваться и запустить цикл событий. | `err := client.Start(ctx)` |
+| `Close` | Закрыть соединение. | `err := client.Close()` |
+| `Invoke` | Выполнить низкоуровневый RPC-вызов. | `result, err := client.Invoke(ctx, op, payload)` |
+| `SetInteractive` | Изменить активный статус для следующего login/reconnect. | `client.SetInteractive(false)` |
+| `OnStart` | Обработчик готовности клиента. | `client.OnStart(func(context.Context) error { return nil })` |
+| `OnMessage` | Новое сообщение. | `client.OnMessage(handler)` |
+| `OnMessageEdit` | Изменение сообщения. | `client.OnMessageEdit(handler)` |
+| `OnMessageDelete` | Удаление сообщения. | `client.OnMessageDelete(handler)` |
+| `OnMessageRead` | Read-marker. | `client.OnMessageRead(handler)` |
+| `OnUserUpdate` | Изменение контакта или профиля. | `client.OnUserUpdate(handler)` |
+| `OnReaction` | Добавление или удаление реакции. | `client.OnReaction(handler)` |
+| `OnChatUpdate` | Изменение чата. | `client.OnChatUpdate(handler)` |
+| `OnPresence` | Изменение online-статуса. | `client.OnPresence(handler)` |
+| `OnTyping` | Индикатор печати. | `client.OnTyping(handler)` |
+| `OnDisconnect` | Закрытие или ошибка соединения. | `client.OnDisconnect(handler)` |
+| `OnRaw` | Нераспознанное событие. | `client.OnRaw(handler)` |
 
-Только Client дополнительно предоставляет CallsSeed, GetCallsSeed и GetDeviceID.
+Только `Client` дополнительно предоставляет:
+
+```go
+seed := client.CallsSeed()       // callsSeed handshake
+seed = client.GetCallsSeed()     // совместимый alias
+deviceID := client.GetDeviceID() // ID устройства
+```
+
+`NonRecoverableError` сообщает, что `Start` не должен повторять подключение.
+Его можно проверить через `errors.As`:
+
+```go
+var fatalErr *gomax.NonRecoverableError
+if errors.As(err, &fatalErr) {
+    log.Println("Повторное подключение не поможет:", fatalErr)
+}
+```
+
+Методы ошибки:
+
+```go
+message := fatalErr.Error()
+original := errors.Unwrap(fatalErr)
+```
 
 ## client.Messages
 

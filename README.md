@@ -133,6 +133,7 @@ _, err = client.Messages.SendMessage(ctx, chatID, "", 0, []gomax.Attachment{*fil
 - [Профиль и настройки](docs/api/self.md)
 - [Auth](docs/api/auth.md) · [Bot Web App](docs/api/bots.md)
 - [Полный публичный API](docs/api/reference.md)
+- [Низкоуровневый API](docs/api/low-level.md)
 - [Типы и поля данных](docs/api/types.md)
 - [События](docs/dispatch/events.md)
 - [Сессии: JSON](docs/session/file.md) · [RAM](docs/session/memory.md) · [SQLite](docs/session/sqlite.md)

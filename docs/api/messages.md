@@ -1,72 +1,181 @@
 # Сообщения
 
-Сервис доступен как `client.Messages` у `Client` и `WebClient`.
+Сервис: `client.Messages`. Все методы принимают `ctx context.Context` первым
+аргументом. В примерах `ctx`, `chatID` и ID сообщений уже объявлены.
 
-## Методы
+## Отправка
 
-| Метод | Что делает | Обязательные данные |
-|---|---|---|
-| `SendMessage` | Отправляет текст, reply или готовые вложения | `chatID`; текст или вложение |
-| `GetChatHistory` / `GetHistory` | Получает историю | `chatID` |
-| `GetMessages` / `GetMessage` | Получает сообщения по ID | `chatID`, ID сообщений |
-| `EditMessage` | Меняет текст сообщения | `chatID`, `messageID`, непустой текст |
-| `DeleteMessage` | Удаляет сообщение | `chatID`, `messageID` |
-| `ForwardMessage(s)` | Пересылает одно или несколько сообщений | ID чатов и сообщений |
-| `PinMessage` | Закрепляет сообщение | `chatID`, `messageID` |
-| `AddReaction` / `RemoveReaction` | Добавляет или убирает реакцию | `chatID`, `messageID`, emoji для добавления |
-| `GetReactions` | Получает реакции | `chatID`, ID сообщений |
-| `ReadMessage` / `ReadMessages` / `ReadChat` | Помечает прочитанным | `chatID` и ID/mark |
-| `VotePoll` | Голосует в опросе | IDs чата, сообщения, опроса и ответов |
-| `GetVideoByID` | Получает данные видео | `chatID`, `messageID`, `videoID` |
-| `GetFileByID` | Получает данные файла | `chatID`, `messageID`, `fileID` |
+### `SendMessage`
 
-## Отправка текста и reply
+Отправляет текст и/или вложения. `replyToMsgID == 0` — без ответа.
 
 ```go
 msg, err := client.Messages.SendMessage(ctx, chatID, "Привет", 0, nil)
-if err != nil {
-    return err
-}
-fmt.Println(msg.ID)
-
-_, err = client.Messages.SendMessage(ctx, chatID, "Ответ", originalMessageID, nil)
 ```
 
-`replyToMsgID == 0` означает обычное сообщение. Пустой текст допустим, если переданы вложения.
+### `EditMessage`
 
-## История
+Меняет текст существующего сообщения.
 
 ```go
-messages, err := client.Messages.GetChatHistory(ctx, chatID, 0, 50)
+err := client.Messages.EditMessage(ctx, chatID, messageID, "Новый текст")
 ```
 
-`count <= 0` заменяется на значение по умолчанию. `fromTime == 0` означает «начиная с текущей точки синхронизации».
+### `DeleteMessage`
+
+Удаляет сообщение. При `forAll == true` запрашивается удаление для всех.
+
+```go
+err := client.Messages.DeleteMessage(ctx, chatID, messageID, true)
+```
+
+### `ForwardMessage`
+
+Пересылает одно сообщение и возвращает созданное сообщение.
+
+```go
+copy, err := client.Messages.ForwardMessage(ctx, targetChatID, messageID, sourceChatID, true)
+```
+
+### `ForwardMessages`
+
+Пересылает несколько сообщений одним запросом.
+
+```go
+err := client.Messages.ForwardMessages(ctx, targetChatID, sourceChatID, []int64{101, 102})
+```
+
+### `PinMessage`
+
+Закрепляет сообщение в чате.
+
+```go
+err := client.Messages.PinMessage(ctx, chatID, messageID)
+```
+
+## Получение
+
+### `GetChatHistory`
+
+Возвращает историю чата. `fromTime == 0` — начиная с текущей точки синхронизации.
+
+```go
+items, err := client.Messages.GetChatHistory(ctx, chatID, 0, 50)
+```
+
+### `GetHistory`
+
+Совместимое имя `GetChatHistory`.
+
+```go
+items, err := client.Messages.GetHistory(ctx, chatID, 0, 50)
+```
+
+### `GetMessages`
+
+Возвращает несколько сообщений по ID.
+
+```go
+items, err := client.Messages.GetMessages(ctx, chatID, []int64{101, 102})
+```
+
+### `GetMessage`
+
+Возвращает одно сообщение по ID.
+
+```go
+item, err := client.Messages.GetMessage(ctx, chatID, messageID)
+```
+
+### `GetVideoByID`
+
+Получает вложение видео из сообщения.
+
+```go
+video, err := client.Messages.GetVideoByID(ctx, chatID, messageID, videoID)
+```
+
+### `GetFileByID`
+
+Получает вложение файла из сообщения.
+
+```go
+file, err := client.Messages.GetFileByID(ctx, chatID, messageID, fileID)
+```
 
 ## Реакции и прочтение
 
+### `AddReaction`
+
+Добавляет реакцию.
+
 ```go
 err := client.Messages.AddReaction(ctx, chatID, messageID, "👍")
-err = client.Messages.RemoveReaction(ctx, chatID, messageID, "👍")
-err = client.Messages.ReadMessage(ctx, messageID, chatID)
 ```
 
-## Пересылка и удаление
+### `RemoveReaction`
+
+Убирает реакцию.
 
 ```go
-_, err := client.Messages.ForwardMessage(ctx, targetChatID, messageID, sourceChatID, true)
-err = client.Messages.DeleteMessage(ctx, chatID, messageID, true) // для всех
+err := client.Messages.RemoveReaction(ctx, chatID, messageID, "👍")
+```
+
+### `GetReactions`
+
+Возвращает реакции для указанных сообщений.
+
+```go
+reactions, err := client.Messages.GetReactions(ctx, chatID, []int64{messageID})
+```
+
+### `ReadMessage`
+
+Помечает одно сообщение прочитанным. Порядок аргументов: `messageID`, затем `chatID`.
+
+```go
+err := client.Messages.ReadMessage(ctx, messageID, chatID)
+```
+
+### `ReadMessages`
+
+Помечает несколько сообщений прочитанными.
+
+```go
+err := client.Messages.ReadMessages(ctx, chatID, []int64{101, 102})
+```
+
+### `ReadChat`
+
+Отправляет read-marker для чата.
+
+```go
+err := client.Messages.ReadChat(ctx, chatID, markID)
+```
+
+## Опросы
+
+### `VotePoll`
+
+Голосует в опросе. Для одного выбора передайте один ID варианта.
+
+```go
+err := client.Messages.VotePoll(ctx, chatID, messageID, pollID, []int{optionID})
 ```
 
 ## Вложения
 
-Сначала загрузите данные через `Uploads`, затем передайте `Attachment` в `SendMessage`. Wire-поля `_type`, `photoToken`, `videoId`, `audioId` и `fileId` формируются библиотекой.
+Вложения сначала создаются через `client.Uploads`, затем передаются в
+`SendMessage`. Поля wire-протокола вручную заполнять не нужно.
 
 ```go
 photo, err := client.Uploads.UploadPhoto(ctx, imageBytes, "photo.jpg")
-if err != nil { return err }
-_, err = client.Messages.SendMessage(ctx, chatID, "", 0, []gomax.Attachment{*photo})
+if err != nil {
+    return err
+}
+_, err = client.Messages.SendMessage(ctx, chatID, "Фото", 0,
+    []gomax.Attachment{*photo})
 ```
 
-## Что возвращается
-
-Методы возвращают типы из `gomax/types`: `Message`, `Attachment`, `ReactionInfo`, `Poll`. Ошибки сервера возвращаются как `error`; проверяйте их после каждого сетевого вызова.
+Все методы возвращают `error`. При ошибке не используйте возвращённый указатель
+или результат.

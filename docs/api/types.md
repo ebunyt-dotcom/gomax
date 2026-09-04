@@ -99,7 +99,20 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 
 ## User и Member
 
-`User` содержит `ID`, `Phone`, `FirstName`, `LastName`, `Nickname`, `AvatarURL`, `Bio`, а также флаги `IsBot`, `IsContact`, `IsMutual`, `IsVerified`.
+Поля `User`:
+
+| Поле | Тип | Что означает |
+|---|---|---|
+| `ID` | `int64` | ID пользователя. |
+| `Phone` | `string` | Номер телефона, если доступен. |
+| `FirstName` / `LastName` | `string` | Имя и фамилия. |
+| `Nickname` | `string` | Никнейм. |
+| `AvatarURL` | `string` | URL аватара. |
+| `Bio` | `string` | Описание профиля. |
+| `IsBot` | `bool` | Пользователь — бот. |
+| `IsContact` | `bool` | Пользователь есть в контактах. |
+| `IsMutual` | `bool` | Контакт взаимный. |
+| `IsVerified` | `bool` | Профиль подтверждён. |
 
 `Member` содержит:
 
@@ -171,4 +184,3 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 Токен уже сохраняется клиентом в выбранный session store. Не публикуйте его в логах и репозитории.
 
 Подробные сигнатуры функций: [полный API](reference.md).
-

@@ -1,38 +1,43 @@
 # Публикация документации
 
-Документация собирается из каталога docs через MkDocs Material и публикуется на GitHub Pages.
+Сайт собирается из `docs/` через MkDocs Material и публикуется GitHub Actions.
 
-## Одноразовая настройка GitHub
+## Один раз включить Pages
 
-Workflow уже находится в репозитории, но GitHub Pages нужно один раз включить в настройках:
+В репозитории откройте **Settings → Pages** и выберите:
 
-1. Откройте репозиторий [ebunyt-dotcom/gomax](https://github.com/ebunyt-dotcom/gomax).
-2. Перейдите в Settings → Pages.
-3. В разделе Build and deployment выберите Source: GitHub Actions.
-4. Откройте Actions → Deploy documentation и нажмите Re-run jobs у последнего запуска.
+```text
+Build and deployment → Source → GitHub Actions
+```
 
-После этого адрес сайта будет:
+После этого сайт доступен по адресу:
 
-    https://ebunyt-dotcom.github.io/gomax/
+```text
+https://ebunyt-dotcom.github.io/gomax/
+```
 
-Если до включения Pages workflow был красным, после этой настройки его можно перезапустить в Actions или дождаться нового push в main.
+## Что запускает публикацию
 
-## Как обновляется сайт
+Workflow `.github/workflows/docs.yml` запускается при изменении:
 
-Изменения в docs или mkdocs.yml автоматически запускают workflow:
+- `docs/**`;
+- `mkdocs.yml`;
+- самого workflow;
+- ручным запуском из **Actions → Deploy documentation → Run workflow**.
 
-1. GitHub Actions устанавливает MkDocs Material.
-2. Сайт собирается из docs.
-3. Готовый сайт загружается как Pages artifact.
-4. deploy-pages публикует его в GitHub Pages.
+Он выполняет четыре шага: устанавливает MkDocs Material, собирает сайт,
+загружает Pages artifact и публикует его.
 
-Локальный запуск не требуется для публикации. Если workflow завершился ошибкой, откройте его лог в разделе Actions.
+## Где менять сайт
 
-## Где менять меню и внешний вид
+| Файл | Что менять |
+|---|---|
+| `mkdocs.yml` | Меню, название, тема, поиск и адрес сайта. |
+| `docs/index.md` | Главная страница. |
+| `docs/api/*.md` | Методы сервисов и примеры. |
+| `docs/stylesheets/extra.css` | Внешний вид. |
+| `.github/workflows/docs.yml` | Сборка и публикация. |
 
-- mkdocs.yml — название, меню, тема, поиск и настройки сайта;
-- docs/stylesheets/extra.css — небольшие визуальные изменения;
-- docs/index.md — главная страница;
-- .github/workflows/docs.yml — процесс публикации.
-
-Полная инструкция GitHub по custom workflow: [Using custom workflows with GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+Локальный запуск для публикации не нужен. Если workflow красный, откройте
+**Actions → Deploy documentation → build** и смотрите шаг, завершившийся
+ошибкой.

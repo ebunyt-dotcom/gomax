@@ -1,50 +1,106 @@
 # Загрузки
 
-Сервис доступен как `client.Uploads`. Загрузка состоит из запроса upload-slot к API и HTTP-загрузки файла.
-
-Готовый пример загрузки и отправки фото: [`examples/send_media/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/send_media/main.go).
+Сервис: `client.Uploads`. Методы принимают содержимое файла как `[]byte`.
+После загрузки результат передаётся в `client.Messages.SendMessage`.
 
 ## Методы
 
-| Метод | Что принимает | Что возвращает |
-|---|---|---|
-| `UploadPhoto` | bytes, имя файла | `*Attachment` типа `PHOTO` |
-| `UploadPhotoWithOptions` | bytes, имя, `profile` | Фото или аватар |
-| `UploadVideo` | bytes, имя, duration | `VIDEO` после обработки |
-| `UploadVoice` | bytes, duration | `VOICE` после обработки |
-| `UploadFile` | bytes, имя | `FILE` после обработки |
-| `DecodeThumbhash` | base64 thumbhash | bytes |
+### `UploadPhoto`
 
-## Фото
+Загружает изображение и возвращает `*gomax.Attachment` типа `PHOTO`.
 
 ```go
-photo, err := client.Uploads.UploadPhoto(ctx, imageBytes, "avatar.jpg")
-if err != nil { return err }
-_, err = client.Messages.SendMessage(ctx, chatID, "", 0, []gomax.Attachment{*photo})
+photo, err := client.Uploads.UploadPhoto(ctx, imageBytes, "photo.jpg")
 ```
 
-Для профиля:
+### `UploadPhotoWithOptions`
+
+Загружает изображение. При `profile == true` оно предназначено для аватара.
 
 ```go
 avatar, err := client.Uploads.UploadPhotoWithOptions(ctx, imageBytes, "avatar.jpg", true)
 ```
 
-## Видео, voice и файлы
+### `UploadVideo`
+
+Загружает видео. `duration` указывается в секундах.
 
 ```go
 video, err := client.Uploads.UploadVideo(ctx, videoBytes, "clip.mp4", 12)
+```
+
+### `UploadVoice`
+
+Загружает голосовое сообщение. `duration` указывается в секундах.
+
+```go
 voice, err := client.Uploads.UploadVoice(ctx, audioBytes, 4)
+```
+
+### `UploadFile`
+
+Загружает произвольный файл.
+
+```go
 file, err := client.Uploads.UploadFile(ctx, documentBytes, "report.pdf")
 ```
 
-Для видео, voice и файлов сервер может сначала принять bytes, а затем прислать `NOTIF_ATTACH`. GoMax ждёт это событие до 60 секунд.
+### `DecodeThumbhash`
+
+Декодирует base64 thumbhash в байты. Это функция пакета `uploads`, а не метод
+сервиса.
+
+```go
+thumb, err := uploads.DecodeThumbhash(value)
+```
 
 ## Отправка результата
 
 ```go
-attachment, err := client.Uploads.UploadFile(ctx, data, "report.pdf")
-if err != nil { return err }
-_, err = client.Messages.SendMessage(ctx, chatID, "Документ", 0, []gomax.Attachment{*attachment})
+file, err := client.Uploads.UploadFile(ctx, data, "report.pdf")
+if err != nil {
+    return err
+}
+_, err = client.Messages.SendMessage(ctx, chatID, "Документ", 0,
+    []gomax.Attachment{*file})
 ```
 
-Не подставляйте вручную `_type`, `videoId`, `audioId` или `fileId`: они формируются из `Attachment` при отправке.
+## Методы уведомлений
+
+Эти методы вызываются клиентом при получении `NOTIF_ATTACH`. В обычном коде их
+вызывать не нужно.
+
+### `NotifyReady`
+
+Передаёт сырое push-уведомление обработчику ожидающей загрузки.
+
+```go
+client.Uploads.NotifyReady(payload)
+```
+
+### `NotifyVideoReady`
+
+Завершает ожидание обработки видео по ID.
+
+```go
+client.Uploads.NotifyVideoReady(videoID)
+```
+
+### `NotifyVoiceReady`
+
+Завершает ожидание обработки voice по ID аудио.
+
+```go
+client.Uploads.NotifyVoiceReady(audioID)
+```
+
+### `NotifyFileReady`
+
+Завершает ожидание обработки файла по ID.
+
+```go
+client.Uploads.NotifyFileReady(fileID)
+```
+
+Для видео, voice и файлов сервер может завершить обработку отдельным событием;
+клиент ждёт его автоматически.

@@ -1,10 +1,16 @@
 # Bot Web App
 
-Сервис доступен как `client.Bots`.
+Сервис: `client.Bots`.
+
+### `GetInitData`
+
+Получает URL и query ID для открытия bot web app.
 
 ```go
 data, err := client.Bots.GetInitData(ctx, botID, chatID, "start-param")
-if err != nil { return err }
+if err != nil {
+    return err
+}
 fmt.Println(data.URL, data.QueryID)
 ```
 
@@ -13,5 +19,3 @@ fmt.Println(data.URL, data.QueryID)
 - `botID` — обязательный ID бота;
 - `chatID` — ID чата, можно передать `0`;
 - `startParam` — необязательный start-параметр.
-
-Результат `InitData` содержит URL и query ID, которые нужны приложению бота.

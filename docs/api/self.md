@@ -1,50 +1,109 @@
-# Свой профиль и настройки
+# Профиль и настройки аккаунта
 
-Сервис доступен как `client.Self`.
-
-Пример профиля и списка чатов: [`examples/profile_and_chats/main.go`](https://github.com/ebunyt-dotcom/gomax/blob/main/examples/profile_and_chats/main.go).
-
-## Методы
-
-| Метод | Назначение |
-|---|---|
-| `GetSelf` | Получить свой профиль |
-| `ChangeProfile` | Изменить имя, описание и photo token |
-| `RequestProfilePhotoUploadURL` | Получить upload URL для аватара |
-| `SetPresence` | Изменить `Interactive` клиента |
-| `ChangeProfileSettings` | Изменить настройки приватности |
-| `GetFolders` | Получить папки чатов |
-| `CreateFolder` | Создать папку |
-| `UpdateFolder` / `UpdateFolderWithOptions` | Изменить папку |
-| `DeleteFolder` | Удалить папку |
-| `CloseAllSessions` | Закрыть другие устройства |
-| `Logout` | Завершить текущую сессию |
+Сервис: `client.Self`. В примерах `ctx` и `chatID` уже объявлены.
 
 ## Профиль
 
+### `GetSelf`
+
+Возвращает свой профиль.
+
 ```go
-profile, err := client.Self.GetSelf(ctx)
-err = client.Self.ChangeProfile(ctx, "Ivan", "Ivanov", "Описание", "")
+me, err := client.Self.GetSelf(ctx)
 ```
 
-Для нового аватара сначала используйте `Uploads.UploadPhotoWithOptions(..., true)`, затем передайте полученный token в `ChangeProfile`.
+### `ChangeProfile`
 
-## Presence
+Меняет имя, фамилию, описание и token фотографии.
+
+```go
+err := client.Self.ChangeProfile(ctx, "Ivan", "Ivanov", "Описание", "")
+```
+
+### `RequestProfilePhotoUploadURL`
+
+Возвращает URL для загрузки фотографии профиля.
+
+```go
+url, err := client.Self.RequestProfilePhotoUploadURL(ctx)
+```
+
+### `SetPresence`
+
+Меняет признак активности клиента. Это локальная настройка для следующего
+login/reconnect.
 
 ```go
 client.Self.SetPresence(false)
 ```
 
-Это локально меняет `Interactive`, который будет отправлен при следующем login/reconnect.
+### `ChangeProfileSettings`
 
-## Папки
+Меняет настройки приватности и профиля. Имена ключей задаёт сервер.
+
+```go
+err := client.Self.ChangeProfileSettings(ctx, map[string]interface{}{
+    "SEARCH_BY_PHONE": false,
+})
+```
+
+## Папки чатов
+
+### `GetFolders`
+
+Возвращает папки и marker синхронизации.
+
+```go
+folders, err := client.Self.GetFolders(ctx)
+```
+
+### `CreateFolder`
+
+Создаёт папку с указанными чатами.
 
 ```go
 folder, err := client.Self.CreateFolder(ctx, "Работа", []int64{chatID})
-folder, err = client.Self.UpdateFolder(ctx, folder.ID, "Проекты", []int64{chatID, anotherChatID})
-err = client.Self.DeleteFolder(ctx, folder.ID)
 ```
 
-## Завершение сессий
+### `UpdateFolder`
 
-`CloseAllSessions` закрывает другие устройства, а `Logout` завершает текущий сеанс. Не вызывайте их случайно: после logout потребуется новая авторизация.
+Меняет название и список чатов папки.
+
+```go
+folder, err := client.Self.UpdateFolder(ctx, folderID, "Проекты", []int64{chatID})
+```
+
+### `UpdateFolderWithOptions`
+
+Меняет папку и дополнительно передаёт фильтры и options протокола.
+
+```go
+folder, err := client.Self.UpdateFolderWithOptions(ctx, folderID, "Проекты",
+    []int64{chatID}, filters, options)
+```
+
+### `DeleteFolder`
+
+Удаляет папку.
+
+```go
+err := client.Self.DeleteFolder(ctx, folderID)
+```
+
+## Сессия
+
+### `CloseAllSessions`
+
+Закрывает все другие устройства, оставляя текущую сессию.
+
+```go
+err := client.Self.CloseAllSessions(ctx)
+```
+
+### `Logout`
+
+Завершает текущую сессию. После этого потребуется новый вход.
+
+```go
+err := client.Self.Logout(ctx)
+```

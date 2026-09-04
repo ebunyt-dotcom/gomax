@@ -1,6 +1,7 @@
 # Конфигурация
 
-Начинайте с `gomax.DefaultConfig()`. Так вы получите рабочие значения endpoint, таймаутов, устройства, сессии и переподключения.
+Конфигурация создаётся через `gomax.DefaultConfig()`. Обязательное поле для
+первого SMS-входа — `Phone` или готовый `Token`.
 
 ```go
 cfg := gomax.DefaultConfig()
@@ -9,56 +10,93 @@ cfg.SessionName = "my-session.json"
 client := gomax.NewClient(cfg)
 ```
 
-## Основные поля
+## Подключение
 
-| Поле | По умолчанию | Обязательно | За что отвечает |
-|---|---|---:|---|
-| `Phone` | пусто | Для первого SMS | Номер в международном формате |
-| `Token` | пусто | Нет | Готовый токен сессии |
-| `Host` | `api2.oneme.ru` | Нет | TCP-сервер |
-| `Port` | `443` | Нет | TCP-порт |
-| `UseSSL` | `true` | Нет | TLS для TCP |
-| `URL` | `wss://api.oneme.ru/websocket` | Нет | WebSocket endpoint |
-| `Proxy` | пусто | Нет | Прокси-соединение |
-| `WorkDir` | `cache` | Нет | Каталог сессии |
-| `SessionName` | `main.json` | Нет | Имя файла сессии |
-| `PersistSession` | `true` | Нет | Сохранять ли сессию на диск |
-| `Store` | JSON store | Нет | Собственное хранилище |
-| `Reconnect` | `true` | Нет | Переподключаться после разрыва |
-| `ReconnectDelay` | `1s` | Нет | Пауза между попытками |
-| `RequestTimeout` | `30s` | Нет | Таймаут RPC-запроса |
-| `UploadTimeout` | `15m` | Нет | Рекомендуемый лимит загрузок |
-| `Interactive` | `true` | Нет | Признак активного клиента/presence |
-
-## SMS и QR
-
-```go
-cfg.AuthFlow = gomax.NewSmsAuthFlow(myCodeProvider, myPasswordProvider)
-cfg.QrAuthFlow = gomax.NewQrAuthFlow(nil, nil)
-```
-
-`AuthFlow` используется `NewClient`, `QrAuthFlow` — `NewWebClient`.
+| Поле | По умолчанию | Назначение |
+|---|---|---|
+| `Phone` | `""` | Номер для первого SMS-входа. |
+| `Token` | `""` | Готовый token; заменяет SMS. |
+| `Host` | `api2.oneme.ru` | TCP-сервер для `NewClient`. |
+| `Port` | `443` | TCP-порт. |
+| `UseSSL` | `true` | TLS для TCP. |
+| `URL` | `wss://api.oneme.ru/websocket` | WebSocket URL для `NewWebClient`. |
+| `Proxy` | `""` | `http://...` или `socks5://...`. |
 
 ## Сессия
 
+| Поле | По умолчанию | Назначение |
+|---|---|---|
+| `WorkDir` | `cache` | Каталог файловой сессии. |
+| `SessionName` | `main.json` | Имя файла сессии. |
+| `PersistSession` | `true` | Сохранять token и device ID. |
+| `Store` | файловый store | Собственное `session.Store`. |
+
 ```go
-cfg.WorkDir = "./cache"
+cfg.WorkDir = "data"
 cfg.SessionName = "account.json"
 cfg.PersistSession = true
 ```
 
-Если токен хранится самостоятельно:
+Если `Store` задан, он используется вместо автоматического store. Для сессии
+только в памяти задайте `cfg.Store = session.NewInMemoryStore()`.
 
-```go
-cfg.Token = os.Getenv("MAX_TOKEN")
-cfg.PersistSession = false
-cfg.Store = session.NewInMemoryStore()
-```
+## Переподключение и таймауты
 
-Подробнее: [JSON](session/file.md), [RAM](session/memory.md), [SQLite](session/sqlite.md).
+| Поле | По умолчанию | Назначение |
+|---|---|---|
+| `Reconnect` | `true` | Повторять подключение после разрыва. |
+| `ReconnectDelay` | `1s` | Пауза между попытками. |
+| `RequestTimeout` | `30s` | Таймаут RPC-запроса. |
+| `UploadTimeout` | `15m` | Максимальное ожидание загрузки. |
+| `Interactive` | `true` | Передавать серверу активный статус. |
 
 ## Профиль устройства
 
-Поля `DeviceType`, `AppVersion`, `BuildNumber`, `OSVersion`, `Timezone`, `Screen`, `Locale`, `DeviceLocale`, `DeviceName`, `Arch`, `PushDeviceType` и `UserAgent` нужны редко. Они предназначены для совместимости с PyMax и настройки handshake.
+Эти поля нужны только для совместимости с мобильным профилем PyMax. В обычном
+коде оставьте значения `DefaultConfig`.
 
-Если вы не эмулируете конкретное устройство, оставьте значения `DefaultConfig()`.
+| Поле | Назначение |
+|---|---|
+| `DeviceID` | Стабильный ID устройства. |
+| `MtInstanceID` | ID экземпляра клиента. |
+| `DeviceType` | Тип устройства, обычно `ANDROID`. |
+| `AppVersion` | Версия приложения. |
+| `BuildNumber` | Номер сборки. |
+| `OSVersion` | Версия ОС. |
+| `Timezone` | Часовой пояс. |
+| `Screen` | Разрешение и плотность экрана. |
+| `Locale` | Язык приложения. |
+| `DeviceLocale` | Локаль устройства. |
+| `DeviceName` | Имя устройства. |
+| `Arch` | Архитектура, например `arm64-v8a`. |
+| `PushDeviceType` | Тип push-сервиса. |
+| `UserAgent` | Полная ручная замена user-agent map. |
+
+## Авторизация и регистрация
+
+| Поле | Назначение |
+|---|---|
+| `AuthFlow` | Свой SMS/2FA flow для `NewClient`. |
+| `QrAuthFlow` | Свой QR/2FA flow для `NewWebClient`. |
+| `Registration` | Имя и фамилия при регистрации нового аккаунта. |
+
+```go
+cfg.Registration = &gomax.RegistrationConfig{
+    FirstName: "Ivan",
+    LastName:  "Ivanov",
+}
+```
+
+`Registration` нужна только если сервер после SMS вернул registration token.
+
+## Разные клиенты
+
+```go
+// SMS/TCP
+tcpClient := gomax.NewClient(gomax.DefaultConfig())
+
+// QR/WebSocket
+qrCfg := gomax.DefaultConfig()
+qrCfg.QrAuthFlow = gomax.NewQrAuthFlow(nil, nil)
+webClient := gomax.NewWebClient(qrCfg)
+```

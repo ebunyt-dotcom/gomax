@@ -90,6 +90,7 @@ nav:
       - Bot Web App: api/bots.md
       - Типы и данные: api/types.md
       - Полный справочник: api/reference.md
+      - Низкоуровневый API: api/low-level.md
   - Дополнительно:
       - Массовые операции:
           - Приглашения: mass-actions/inviting.md

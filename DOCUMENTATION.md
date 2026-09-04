@@ -11,6 +11,7 @@ https://ebunyt-dotcom.github.io/gomax/
 - [QR-авторизация](docs/authentication/qr.md)
 - [Примеры](docs/examples.md)
 - [Полный API](docs/api/reference.md)
+- [Низкоуровневый API](docs/api/low-level.md)
 - [Типы и данные](docs/api/types.md)
 - [FAQ](docs/faq.md)
 - [Диагностика](docs/troubleshooting.md)
