@@ -77,6 +77,7 @@ nav:
           - Память: session/memory.md
           - SQLite: session/sqlite.md
       - Примеры: examples.md
+      - Публикация на GitHub Pages: deployment.md
       - FAQ: faq.md
       - Диагностика: troubleshooting.md
   - API:
