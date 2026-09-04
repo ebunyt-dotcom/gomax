@@ -29,6 +29,8 @@ GoMax — Go-клиент Max с двумя способами подключе�
 | [Профиль](api/self.md) | Свой профиль, папки, presence и logout |
 | [Auth](api/auth.md) | Низкоуровневые SMS/QR/2FA операции |
 | [Bot Web App](api/bots.md) | Получение данных bot web app |
+| [Полный API](api/reference.md) | Все публичные функции и методы |
+| [Типы и данные](api/types.md) | Поля сообщений, чатов, пользователей, вложений и событий |
 | [События](dispatch/events.md) | `OnStart`, `OnMessage`, `OnRaw` и другие обработчики |
 | [JSON-сессия](session/file.md) | Сохранение одного аккаунта в файл |
 | [RAM-сессия](session/memory.md) | Сессия без записи на диск |
