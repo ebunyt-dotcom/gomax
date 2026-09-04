@@ -1,5 +1,17 @@
-// Package gomax provides an idiomatic, high-performance Go client for the Max API,
-// ported directly from the Python PyMax library.
+// Package gomax provides an idiomatic Go client for the unofficial Max API.
+//
+// The package follows the protocol and public behavior of PyMax while exposing
+// Go-native clients, services, typed events, session stores, and media helpers.
+// Use NewClient for TCP/SMS login or NewWebClient for WebSocket/QR login.
+//
+// Basic usage:
+//
+//     cfg := gomax.DefaultConfig()
+//     cfg.Phone = "+79990000000"
+//     client := gomax.NewClient(cfg)
+//     err := client.Start(context.Background())
+//
+// See the full guide at https://ebunyt-dotcom.github.io/gomax/.
 package gomax
 
 import (

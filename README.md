@@ -2,6 +2,11 @@
 
 Go-библиотека для работы с Max через TCP и WebSocket. API и формат обмена адаптированы из PyMax, а публичный интерфейс сделан привычным для Go.
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/ebunyt-dotcom/gomax.svg)](https://pkg.go.dev/github.com/ebunyt-dotcom/gomax)
+[![Документация](https://img.shields.io/badge/docs-GitHub%20Pages-4f46e5)](https://ebunyt-dotcom.github.io/gomax/)
+
+Онлайн-документация: [ebunyt-dotcom.github.io/gomax](https://ebunyt-dotcom.github.io/gomax/). API пакетов Go: [pkg.go.dev/github.com/ebunyt-dotcom/gomax](https://pkg.go.dev/github.com/ebunyt-dotcom/gomax).
+
 ## Установка
 
 ```powershell

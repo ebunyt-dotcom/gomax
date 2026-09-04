@@ -1,0 +1,106 @@
+site_name: GoMax
+site_description: Go-библиотека для Max с API, совместимым с PyMax
+site_author: ebunyt-dotcom
+site_url: https://ebunyt-dotcom.github.io/gomax/
+repo_name: ebunyt-dotcom/gomax
+repo_url: https://github.com/ebunyt-dotcom/gomax
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: ru
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Светлая тема
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Тёмная тема
+
+plugins:
+  - search:
+      lang: ru
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Главная: index.md
+  - Руководство:
+      - Начало работы: getting-started.md
+      - Конфигурация: configuration.md
+      - Авторизация:
+          - SMS: authentication/sms.md
+          - QR: authentication/qr.md
+          - 2FA: authentication/2fa.md
+      - События: dispatch/events.md
+      - Сессии:
+          - JSON-файл: session/file.md
+          - Память: session/memory.md
+          - SQLite: session/sqlite.md
+      - Примеры: examples.md
+      - FAQ: faq.md
+      - Диагностика: troubleshooting.md
+  - API:
+      - Сообщения: api/messages.md
+      - Чаты: api/chats.md
+      - Пользователи: api/users.md
+      - Загрузки: api/uploads.md
+      - Профиль: api/self.md
+      - Auth: api/auth.md
+      - Bot Web App: api/bots.md
+      - Типы и данные: api/types.md
+      - Полный справочник: api/reference.md
+  - Дополнительно:
+      - Массовые операции:
+          - Приглашения: mass-actions/inviting.md
+          - Вступления: mass-actions/joins.md
+          - Несколько аккаунтов: mass-actions/multi-account.md
+          - Реакции: mass-actions/reactions.md
+          - Просмотры: mass-actions/views.md
+      - Wire-протокол: protocol/wire.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ebunyt-dotcom/gomax
+
+copyright: GoMax — неофициальный клиент Max, портированный с PyMax
