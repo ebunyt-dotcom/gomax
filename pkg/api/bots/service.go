@@ -13,6 +13,7 @@ import (
 // BotsService handles initialization of a bot web app.
 type BotsService struct{ invoker api.Invoker }
 
+// NewBotsService creates a bot web-app service backed by invoker.
 func NewBotsService(invoker api.Invoker) *BotsService { return &BotsService{invoker: invoker} }
 
 // GetInitData requests the URL and query ID needed to open a bot web app.

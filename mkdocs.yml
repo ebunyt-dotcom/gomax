@@ -77,7 +77,12 @@ nav:
           - Память: session/memory.md
           - SQLite: session/sqlite.md
       - Примеры: examples.md
-      - Публикация на GitHub Pages: deployment.md
+      - Задачи:
+          - Все задачи: tasks/index.md
+          - История: tasks/history.md
+          - Реакции: tasks/reactions.md
+          - Приглашения и заявки: tasks/invites.md
+          - Чаты: tasks/chats.md
       - FAQ: faq.md
       - Диагностика: troubleshooting.md
   - API:

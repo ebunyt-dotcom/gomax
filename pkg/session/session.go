@@ -69,6 +69,7 @@ func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{}
 }
 
+// SaveSession replaces the in-memory session.
 func (s *InMemoryStore) SaveSession(info *SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,12 +77,14 @@ func (s *InMemoryStore) SaveSession(info *SessionInfo) error {
 	return nil
 }
 
+// LoadSession returns the in-memory session, or nil when none is saved.
 func (s *InMemoryStore) LoadSession() (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.session, nil
 }
 
+// UpdateToken changes the token of the in-memory session.
 func (s *InMemoryStore) UpdateToken(phone, newToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,6 +94,7 @@ func (s *InMemoryStore) UpdateToken(phone, newToken string) error {
 	return nil
 }
 
+// LoadSessionByDeviceID returns the session for deviceID.
 func (s *InMemoryStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -101,6 +105,7 @@ func (s *InMemoryStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, er
 	return &copy, nil
 }
 
+// LoadSessionByPhone returns the session for phone.
 func (s *InMemoryStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -111,6 +116,7 @@ func (s *InMemoryStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
 	return &copy, nil
 }
 
+// DeleteSession removes the in-memory session when token matches.
 func (s *InMemoryStore) DeleteSession(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +126,10 @@ func (s *InMemoryStore) DeleteSession(token string) error {
 	return nil
 }
 
+// DeleteAllSessions removes the in-memory session.
 func (s *InMemoryStore) DeleteAllSessions() error { return s.DeleteSession("") }
+
+// Close releases no resources for the in-memory store.
 func (s *InMemoryStore) Close() error             { return nil }
 
 // FileStore persists session data to a JSON file.
@@ -139,6 +148,7 @@ func NewFileStore(workDir, sessionName string) *FileStore {
 	}
 }
 
+// SaveSession writes the session as a private JSON file.
 func (s *FileStore) SaveSession(info *SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,6 +165,7 @@ func (s *FileStore) SaveSession(info *SessionInfo) error {
 	return os.WriteFile(s.filePath, data, 0600)
 }
 
+// LoadSession reads the JSON session file, returning nil when it does not exist.
 func (s *FileStore) LoadSession() (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -174,6 +185,7 @@ func (s *FileStore) LoadSession() (*SessionInfo, error) {
 	return &info, nil
 }
 
+// UpdateToken updates the token in the JSON session file.
 func (s *FileStore) UpdateToken(phone, newToken string) error {
 	info, err := s.LoadSession()
 	if err != nil {
@@ -186,6 +198,7 @@ func (s *FileStore) UpdateToken(phone, newToken string) error {
 	return s.SaveSession(info)
 }
 
+// LoadSessionByDeviceID reads the JSON session when its device ID matches.
 func (s *FileStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error) {
 	info, err := s.LoadSession()
 	if err != nil || info == nil || info.DeviceID != deviceID {
@@ -194,6 +207,7 @@ func (s *FileStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error)
 	return info, nil
 }
 
+// LoadSessionByPhone reads the JSON session when its phone matches.
 func (s *FileStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
 	info, err := s.LoadSession()
 	if err != nil || info == nil || info.Phone != phone {
@@ -202,6 +216,7 @@ func (s *FileStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
 	return info, nil
 }
 
+// DeleteSession removes the JSON session when token matches.
 func (s *FileStore) DeleteSession(token string) error {
 	info, err := s.LoadSession()
 	if err != nil || info == nil || (token != "" && info.Token != token) {
@@ -216,5 +231,8 @@ func (s *FileStore) DeleteSession(token string) error {
 	return nil
 }
 
+// DeleteAllSessions removes the JSON session file.
 func (s *FileStore) DeleteAllSessions() error { return s.DeleteSession("") }
+
+// Close releases no resources for the file store.
 func (s *FileStore) Close() error             { return nil }

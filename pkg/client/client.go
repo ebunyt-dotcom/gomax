@@ -242,10 +242,12 @@ type NonRecoverableError struct {
 	Err error
 }
 
+// Error returns the underlying non-recoverable error message.
 func (e *NonRecoverableError) Error() string {
 	return e.Err.Error()
 }
 
+// Unwrap returns the underlying error for errors.Is and errors.As.
 func (e *NonRecoverableError) Unwrap() error {
 	return e.Err
 }

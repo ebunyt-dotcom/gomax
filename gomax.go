@@ -79,13 +79,20 @@ type (
 	// InitData contains bot web-app initialization data.
 	InitData = types.InitData
 
-	SmsAuthFlow          = authflow.SmsAuthFlow
-	QrAuthFlow           = authflow.QrAuthFlow
-	CodeProvider         = authflow.CodeProvider
-	PasswordProvider     = authflow.PasswordProvider
+	// SmsAuthFlow performs phone/SMS authentication and optional 2FA.
+	SmsAuthFlow = authflow.SmsAuthFlow
+	// QrAuthFlow performs QR authentication and optional 2FA.
+	QrAuthFlow = authflow.QrAuthFlow
+	// CodeProvider supplies an SMS verification code.
+	CodeProvider = authflow.CodeProvider
+	// PasswordProvider supplies a 2FA password.
+	PasswordProvider = authflow.PasswordProvider
+	// PasswordProviderHint optionally receives a server password hint.
 	PasswordProviderHint = authflow.PasswordProviderWithHint
-	QrHandler            = authflow.QrHandler
-	AuthResult           = authflow.AuthResult
+	// QrHandler receives a QR URL and decides how to display it.
+	QrHandler = authflow.QrHandler
+	// AuthResult contains the token and user data returned by an auth flow.
+	AuthResult = authflow.AuthResult
 )
 
 // Attachment type constants re-exported for convenience.

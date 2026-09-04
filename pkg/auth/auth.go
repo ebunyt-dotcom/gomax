@@ -68,6 +68,7 @@ func readLineWithContext(ctx context.Context, prompt string) (string, error) {
 // ConsoleCodeProvider prompts user on console for SMS code.
 type ConsoleCodeProvider struct{}
 
+// GetCode reads an SMS code from the console.
 func (p *ConsoleCodeProvider) GetCode(ctx context.Context) (string, error) {
 	return readLineWithContext(ctx, "Enter SMS verification code: ")
 }
@@ -75,10 +76,12 @@ func (p *ConsoleCodeProvider) GetCode(ctx context.Context) (string, error) {
 // ConsolePasswordProvider prompts user on console for 2FA password.
 type ConsolePasswordProvider struct{}
 
+// GetPassword reads a 2FA password from the console.
 func (p *ConsolePasswordProvider) GetPassword(ctx context.Context) (string, error) {
 	return readLineWithContext(ctx, "Enter 2FA password: ")
 }
 
+// GetPasswordWithHint prompts for the 2FA password and displays the server hint.
 func (p *ConsolePasswordProvider) GetPasswordWithHint(ctx context.Context, hint string) (string, error) {
 	if hint != "" {
 		return readLineWithContext(ctx, fmt.Sprintf("Enter 2FA password (hint: %s): ", hint))
@@ -89,6 +92,7 @@ func (p *ConsolePasswordProvider) GetPasswordWithHint(ctx context.Context, hint 
 // ConsoleQrHandler prints an ASCII QR code and its source URL to the console.
 type ConsoleQrHandler struct{}
 
+// HandleQr prints an ASCII QR code and its URL to the console.
 func (h *ConsoleQrHandler) HandleQr(ctx context.Context, qrURL string) error {
 	qr, err := qrcode.New(qrURL, qrcode.Medium)
 	if err != nil {

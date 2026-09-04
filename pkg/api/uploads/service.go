@@ -202,8 +202,13 @@ func (s *UploadService) NotifyReady(payload map[string]interface{}) {
 
 // NotifyVideoReady, NotifyVoiceReady and NotifyFileReady are explicit hooks
 // for applications that route raw protocol events themselves.
+// NotifyVideoReady resolves a pending video upload by ID.
 func (s *UploadService) NotifyVideoReady(id int64) { s.resolveWaiter(id, false) }
+
+// NotifyVoiceReady resolves a pending voice upload by ID.
 func (s *UploadService) NotifyVoiceReady(id int64) { s.resolveWaiter(id, true) }
+
+// NotifyFileReady resolves a pending file upload by ID.
 func (s *UploadService) NotifyFileReady(id int64)  { s.resolveFileWaiter(id) }
 
 func (s *UploadService) registerWaiter(id int64, voice bool) chan struct{} {

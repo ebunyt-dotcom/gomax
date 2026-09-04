@@ -364,6 +364,8 @@ func (s *ChatService) GetChat(ctx context.Context, chatID int64) (*types.Chat, e
 func (s *ChatService) LeaveGroup(ctx context.Context, chatID int64) error {
 	return s.LeaveChat(ctx, chatID)
 }
+
+// LeaveChannel leaves a channel.
 func (s *ChatService) LeaveChannel(ctx context.Context, chatID int64) error {
 	return s.LeaveChat(ctx, chatID)
 }
