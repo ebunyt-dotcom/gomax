@@ -10,7 +10,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/vmihailenco/msgpack/v5"
 
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 func TestTcpFramerUsesExpectedHeaderLayout(t *testing.T) {

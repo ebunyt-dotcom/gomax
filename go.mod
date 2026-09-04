@@ -1,4 +1,4 @@
-module gomax
+module github.com/ebunyt-dotcom/gomax
 
 go 1.26.5
 

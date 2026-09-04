@@ -18,7 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"gomax/pkg/transport"
+	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 )
 
 // ============================================================================

@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 // Invoker represents an RPC invoker capable of sending protocol frames and awaiting responses.

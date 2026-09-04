@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"gomax/pkg/connection"
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/connection"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 // ==========================================

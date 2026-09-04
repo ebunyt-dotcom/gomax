@@ -3,8 +3,8 @@
 package gomax
 
 import (
-	"gomax/pkg/client"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/client"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // Primary client constructors

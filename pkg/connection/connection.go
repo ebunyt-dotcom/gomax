@@ -3,7 +3,7 @@ package connection
 import (
 	"context"
 
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 // Connection defines the public interface required by RPC services, clients, and event dispatchers.

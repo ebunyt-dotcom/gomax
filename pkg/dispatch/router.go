@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // MessageHandler handles incoming messages.

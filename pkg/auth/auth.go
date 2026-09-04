@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"gomax/pkg/api"
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/api"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 // CodeProvider retrieves SMS verification code.

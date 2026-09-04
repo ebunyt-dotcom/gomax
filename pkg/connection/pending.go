@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 var (

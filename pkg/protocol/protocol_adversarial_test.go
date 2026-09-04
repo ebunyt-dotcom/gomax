@@ -9,7 +9,7 @@ import (
 	"math"
 	"testing"
 
-	"gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 )
 
 // ============================================================================

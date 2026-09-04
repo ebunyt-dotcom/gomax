@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"gomax/pkg/protocol"
-	"gomax/pkg/transport"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 )
 
 const (

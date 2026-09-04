@@ -8,9 +8,9 @@ import (
 	"mime/multipart"
 	"net/http"
 
-	"gomax/pkg/api"
-	"gomax/pkg/protocol"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/api"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // UploadService handles binary media and document uploads to Max servers.

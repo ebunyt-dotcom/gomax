@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	"gomax"
+	"github.com/ebunyt-dotcom/gomax"
 )
 
 // Демонстрация массовых действий: масс-реакции, масслукинг, вступления и инвайтинг

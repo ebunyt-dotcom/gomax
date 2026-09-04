@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"gomax"
+	"github.com/ebunyt-dotcom/gomax"
 )
 
 func main() {

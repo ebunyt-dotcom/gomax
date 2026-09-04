@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"gomax/pkg/api"
-	"gomax/pkg/protocol"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/api"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // UserService handles user profiles, contacts, and searches.

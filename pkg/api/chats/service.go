@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"gomax/pkg/api"
-	"gomax/pkg/protocol"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/api"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // ChatService handles all chat, channel and group related operations.

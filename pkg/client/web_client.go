@@ -7,17 +7,17 @@ import (
 	"sync"
 	"time"
 
-	"gomax/pkg/api/chats"
-	"gomax/pkg/api/messages"
-	"gomax/pkg/api/uploads"
-	"gomax/pkg/api/users"
-	"gomax/pkg/auth"
-	"gomax/pkg/connection"
-	"gomax/pkg/dispatch"
-	"gomax/pkg/protocol"
-	"gomax/pkg/session"
-	"gomax/pkg/transport"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
+	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
+	"github.com/ebunyt-dotcom/gomax/pkg/api/uploads"
+	"github.com/ebunyt-dotcom/gomax/pkg/api/users"
+	"github.com/ebunyt-dotcom/gomax/pkg/auth"
+	"github.com/ebunyt-dotcom/gomax/pkg/connection"
+	"github.com/ebunyt-dotcom/gomax/pkg/dispatch"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/session"
+	"github.com/ebunyt-dotcom/gomax/pkg/transport"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // WebClient implements the WebSocket-based client with QR authentication.

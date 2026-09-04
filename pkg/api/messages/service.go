@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gomax/pkg/api"
-	"gomax/pkg/protocol"
-	"gomax/pkg/types"
+	"github.com/ebunyt-dotcom/gomax/pkg/api"
+	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
 
 // MessageService handles messages, reactions, mass-looking (reading), and history.
