@@ -1,116 +1,54 @@
-# QR-Авторизация (WebClient)
+# Вход через QR
 
-Авторизация через QR-код позволяет мгновенно привязать клиент без использования номера телефона и SMS-кодов, используя официальное мобильное приложение Max на смартфоне (раздел «Связанные устройства» / «QR-код»).
+QR-вход работает через `WebClient` и не требует номера телефона в конфигурации.
 
-Реализована в модуле `gomax/pkg/auth` и нативно используется в `gomax.WebClient`.
-
----
-
-## 🔄 Механика работы QR-входа
-
-1. Клиент подключается к WebSocket шлюзу `wss://api.oneme.ru/websocket`.
-2. Выполняется запрос создания сессии QR-входа: `OpGetQr` (опкод 288) с пустым payload `{}`.
-3. Сервер возвращает глубокую ссылку (Deep Link) вида `max://login?token=...` или HTTPS-ссылку.
-4. Вызывается метод `QrHandler.HandleQr(ctx, qrURL)`.
-5. Запускается фоновый поллинг статуса: через `OpGetQrStatus` (опкод 289) проверяется `trackId`.
-6. После подтверждения телефона вызывается `OpLoginByQr` (опкод 291), сервер возвращает сессионный `token` и `userId`.
-
----
-
-## 🧩 Интерфейс `QrHandler`
+## Минимальный вариант
 
 ```go
-type QrHandler interface {
-    HandleQr(ctx context.Context, qrURL string) error
-}
+cfg := gomax.DefaultConfig()
+cfg.SessionName = "qr-session.json"
+cfg.QrAuthFlow = gomax.NewQrAuthFlow(nil, nil)
+
+client := gomax.NewWebClient(cfg)
+client.OnStart(func(ctx context.Context) error {
+    fmt.Println("Вход выполнен")
+    return nil
+})
+
+log.Fatal(client.Start(context.Background()))
 ```
 
-Стандартная реализация `ConsoleQrHandler` печатает ссылку в консоль.
+Стандартный обработчик печатает QR-код и ссылку в терминал. Отсканируйте код в приложении Max.
 
----
+## Как работает flow
 
-## 🎨 Реализация отрисовки QR-кода прямо в терминале
+1. WebSocket-клиент выполняет handshake.
+2. `OpGetQr` (`288`) создаёт QR-сессию.
+3. `OpGetQrStatus` (`289`) проверяет `trackId` с интервалом сервера.
+4. После подтверждения вызывается `OpLoginByQr` (`291`).
+5. Токен сохраняется в файл сессии.
 
-Для удобства пользователя ссылку можно превратить в графический QR-код прямо в ANSI-терминале с помощью сторонней библиотеки (например, `github.com/skip2/go-qrcode`):
+## Собственный обработчик QR
 
 ```go
-package main
+type MyQrHandler struct{}
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/skip2/go-qrcode"
-	"github.com/ebunyt-dotcom/gomax"
-	"github.com/ebunyt-dotcom/gomax/pkg/auth"
-)
-
-// TerminalQrHandler рисует ASCII QR-код в консоли
-type TerminalQrHandler struct{}
-
-func (h *TerminalQrHandler) HandleQr(ctx context.Context, qrURL string) error {
-	fmt.Println("👉 Отсканируйте этот QR-код в приложении Max:")
-	
-	// Генерация ASCII-символов QR-кода
-	qr, err := qrcode.New(qrURL, qrcode.Medium)
-	if err != nil {
-		return err
-	}
-	
-	fmt.Println(qr.ToSmallString(false))
-	fmt.Printf("Или перейдите по ссылке: %s\n\n", qrURL)
-	return nil
+func (MyQrHandler) HandleQr(ctx context.Context, qrURL string) error {
+    fmt.Println("Откройте или покажите эту ссылку:", qrURL)
+    return nil
 }
+
+cfg.QrAuthFlow = gomax.NewQrAuthFlow(MyQrHandler{}, nil)
 ```
 
----
+Интерфейс `QrHandler` содержит один метод: `HandleQr(context.Context, string) error`.
 
-## 💻 Полный пример запуска WebClient с QR-входом
+## Если нужен пароль 2FA
+
+Передайте второй аргумент в `NewQrAuthFlow`. Если он `nil`, используется консольный ввод.
 
 ```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-
-	"gomax"
-	"gomax/pkg/auth"
-)
-
-func main() {
-	cfg := gomax.DefaultConfig()
-	cfg.SessionName = "qr_session.json"
-	cfg.PersistSession = true
-
-	// Создаем QR flow с собственным обработчиком
-	qrFlow := auth.NewQrAuthFlow(&auth.ConsoleQrHandler{}, &auth.ConsolePasswordProvider{})
-	cfg.QrAuthFlow = qrFlow
-
-	webClient := gomax.NewWebClient(cfg)
-
-	webClient.OnStart(func(ctx context.Context) error {
-		fmt.Printf("🎉 Успешный вход через QR! ID: %d, Имя: %s\n", webClient.Me.ID, webClient.Me.FirstName)
-		return nil
-	})
-
-	webClient.OnMessage(func(ctx context.Context, msg *gomax.Message) error {
-		if !msg.IsOutgoing {
-			fmt.Printf("Получено сообщение: %s\n", msg.Text)
-		}
-		return nil
-	})
-
-	fmt.Println("🚀 Инициализация Web-клиента...")
-	if err := webClient.Start(context.Background()); err != nil {
-		log.Fatalf("Ошибка сессии WebClient: %v", err)
-	}
-}
+cfg.QrAuthFlow = gomax.NewQrAuthFlow(nil, myPasswordProvider)
 ```
 
----
-
-## ⏱ Время жизни QR-кода
-
-QR-код действителен до значения `expiresAt`, которое присылает сервер (обычно несколько минут). Если вход не подтверждён вовремя, цикл поллинга завершится ошибкой таймаута.
+`NewClient` QR не показывает: он предназначен для TCP/SMS-входа.
