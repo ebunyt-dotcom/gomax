@@ -17,6 +17,7 @@ GoMax — Go-клиент Max с двумя способами подключе�
 | Раздел | Для чего |
 |---|---|
 | [Начало работы](getting-started.md) | Первый проект, SMS, QR, остановка клиента |
+| [Готовые примеры](examples.md) | Готовый `main.go` под каждую типовую задачу |
 | [Конфигурация](configuration.md) | Все основные поля `Config` |
 | [SMS](authentication/sms.md) | Вход по номеру и обработчики кода |
 | [QR](authentication/qr.md) | QR-вход через WebSocket |

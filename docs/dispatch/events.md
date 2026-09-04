@@ -2,6 +2,8 @@
 
 Обработчики регистрируются на `Client` или `WebClient` до вызова `Start`.
 
+Полный пример: [`examples/events/main.go`](../../examples/events/main.go).
+
 ## Обработчики
 
 | Метод | Когда вызывается | Данные |

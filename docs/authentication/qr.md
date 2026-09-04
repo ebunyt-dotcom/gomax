@@ -20,6 +20,8 @@ log.Fatal(client.Start(context.Background()))
 
 Стандартный обработчик печатает QR-код и ссылку в терминал. Отсканируйте код в приложении Max.
 
+Готовый пример: [`examples/qr_login/main.go`](../../examples/qr_login/main.go).
+
 ## Как работает flow
 
 1. WebSocket-клиент выполняет handshake.

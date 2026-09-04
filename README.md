@@ -120,6 +120,7 @@ _, err = client.Messages.SendMessage(ctx, chatID, "", 0, []gomax.Attachment{*fil
 
 ## Документация
 
+- [Готовые примеры](docs/examples.md)
 - [Начало работы](docs/getting-started.md)
 - [Конфигурация](docs/configuration.md)
 - [SMS](docs/authentication/sms.md) · [QR](docs/authentication/qr.md) · [2FA](docs/authentication/2fa.md)

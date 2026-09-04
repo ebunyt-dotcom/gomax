@@ -2,6 +2,8 @@
 
 Сервис доступен как `client.Self`.
 
+Пример профиля и списка чатов: [`examples/profile_and_chats/main.go`](../../examples/profile_and_chats/main.go).
+
 ## Методы
 
 | Метод | Назначение |
