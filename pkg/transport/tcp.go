@@ -216,10 +216,17 @@ func (t *TCPTransport) Send(data []byte) error {
 		return ErrNotConnected
 	}
 
-	_, err := conn.Write(data)
-	if err != nil {
-		t.markClosed()
-		return fmt.Errorf("tcp write: %w", err)
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			t.markClosed()
+			return fmt.Errorf("tcp write: %w", err)
+		}
+		if n == 0 {
+			t.markClosed()
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }

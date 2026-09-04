@@ -101,6 +101,9 @@ func NewConnectionManager(
 			c.EventsChanSize = DefaultEventsChanSize
 		}
 	}
+	if c.ProtocolVersion == 0 {
+		c.ProtocolVersion = protocol.VersionTcp
+	}
 
 	return &ConnectionManager{
 		cfg:       c,
@@ -131,7 +134,7 @@ func (m *ConnectionManager) Start(ctx context.Context) error {
 	m.closedErr.Store(nil)
 	m.closedCh = make(chan struct{})
 
-	m.loopCtx, m.loopCancel = context.WithCancel(context.Background())
+	m.loopCtx, m.loopCancel = context.WithCancel(ctx)
 
 	// Launch receive loop
 	m.wg.Add(1)

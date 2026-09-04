@@ -9,11 +9,11 @@
 ## 🔄 Механика работы QR-входа
 
 1. Клиент подключается к WebSocket шлюзу `wss://api.oneme.ru/websocket`.
-2. Выполняется запрос создания сессии QR-входа: `OpAuthRequest` (опкод 17) с параметром `{"type": "QR"}`.
+2. Выполняется запрос создания сессии QR-входа: `OpGetQr` (опкод 288) с пустым payload `{}`.
 3. Сервер возвращает глубокую ссылку (Deep Link) вида `max://login?token=...` или HTTPS-ссылку.
 4. Вызывается метод `QrHandler.HandleQr(ctx, qrURL)`.
-5. Запускается фоновый поллинг статуса: каждые 2 секунды отправляется `OpAuth` (опкод 18) с `{"type": "POLL_QR"}`.
-6. Как только пользователь подтверждает вход на смартфоне, сервер возвращает сессионный `token` и `userId`.
+5. Запускается фоновый поллинг статуса: через `OpGetQrStatus` (опкод 289) проверяется `trackId`.
+6. После подтверждения телефона вызывается `OpLoginByQr` (опкод 291), сервер возвращает сессионный `token` и `userId`.
 
 ---
 
@@ -41,8 +41,8 @@ import (
 	"fmt"
 
 	"github.com/skip2/go-qrcode"
-	"gomax"
-	"gomax/pkg/auth"
+	"github.com/ebunyt-dotcom/gomax"
+	"github.com/ebunyt-dotcom/gomax/pkg/auth"
 )
 
 // TerminalQrHandler рисует ASCII QR-код в консоли
@@ -86,6 +86,7 @@ func main() {
 
 	// Создаем QR flow с собственным обработчиком
 	qrFlow := auth.NewQrAuthFlow(&auth.ConsoleQrHandler{}, &auth.ConsolePasswordProvider{})
+	cfg.QrAuthFlow = qrFlow
 
 	webClient := gomax.NewWebClient(cfg)
 
@@ -112,4 +113,4 @@ func main() {
 
 ## ⏱ Время жизни QR-кода
 
-QR-код действителен в течение 120 секунд. Если за это время вход не подтвержден, цикл поллинга завершится ошибкой таймаута, и потребуется повторный запуск клиента.
+QR-код действителен до значения `expiresAt`, которое присылает сервер (обычно несколько минут). Если вход не подтверждён вовремя, цикл поллинга завершится ошибкой таймаута.

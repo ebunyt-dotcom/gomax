@@ -12,6 +12,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/api"
 	"github.com/ebunyt-dotcom/gomax/pkg/fingerprint"
 	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
+	"github.com/skip2/go-qrcode"
 )
 
 // CodeProvider retrieves SMS verification code.
@@ -85,18 +86,26 @@ func (p *ConsolePasswordProvider) GetPasswordWithHint(ctx context.Context, hint 
 	return p.GetPassword(ctx)
 }
 
-// ConsoleQrHandler prints QR code URL to console.
+// ConsoleQrHandler prints an ASCII QR code and its source URL to the console.
 type ConsoleQrHandler struct{}
 
 func (h *ConsoleQrHandler) HandleQr(ctx context.Context, qrURL string) error {
-	fmt.Printf("\nScan QR code to login:\n%s\n\n", qrURL)
+	qr, err := qrcode.New(qrURL, qrcode.Medium)
+	if err != nil {
+		return fmt.Errorf("generate qr code: %w", err)
+	}
+
+	fmt.Println("\nОтсканируйте QR-код в приложении MAX:")
+	fmt.Println(qr.ToSmallString(false))
+	fmt.Printf("QR-ссылка: %s\n\n", qrURL)
 	return nil
 }
 
 // AuthResult represents successful login result.
 type AuthResult struct {
-	Token  string
-	UserID int64
+	Token      string
+	UserID     int64
+	IsRegister bool
 }
 
 // SmsAuthFlow handles phone and SMS based authentication.
@@ -186,7 +195,10 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 	if challengeToken == "" {
 		return nil, fmt.Errorf("server did not return challenge token in auth request response: %v", reqRes)
 	}
-	log.Printf("[gomax] SMS code requested successfully; challenge token acquired")
+	// A token means that Max created an authentication challenge. It does not
+	// prove that the SMS provider delivered a message, so keep the server's
+	// delivery metadata visible without exposing the token itself.
+	log.Printf("[gomax] SMS auth request accepted (codeLength=%v, requestsLeft=%v, requestMaxDuration=%v, altActionDuration=%v); challenge token acquired", reqRes["codeLength"], reqRes["requestCountLeft"], reqRes["requestMaxDuration"], reqRes["altActionDuration"])
 
 	code, err := f.CodeProvider.GetCode(ctx)
 	if err != nil {
@@ -327,7 +339,7 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		uid = int64(uF)
 	}
 
-	return &AuthResult{Token: token, UserID: uid}, nil
+	return &AuthResult{Token: token, UserID: uid, IsRegister: isRegister}, nil
 }
 
 // extractToken retrieves the login or register token from server response attributes.
@@ -406,23 +418,51 @@ func NewQrAuthFlow(qrHandler QrHandler, pwdProvider PasswordProvider) *QrAuthFlo
 
 // Authenticate polls and completes QR authorization.
 func (f *QrAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker) (*AuthResult, error) {
-	// Request QR link
-	res, err := invoker.Invoke(ctx, protocol.OpAuthRequest, map[string]interface{}{
-		"type": "QR",
-	})
+	if f.QrHandler == nil {
+		f.QrHandler = &ConsoleQrHandler{}
+	}
+	if f.PasswordProvider == nil {
+		f.PasswordProvider = &ConsolePasswordProvider{}
+	}
+	// QR login is a three-step protocol: GET_QR, GET_QR_STATUS and
+	// LOGIN_BY_QR. It is deliberately kept separate from mobile SMS auth;
+	// the server treats AUTH_REQUEST as a phone-auth track only.
+	res, err := invoker.Invoke(ctx, protocol.OpGetQr, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("request qr link failed: %w", err)
 	}
 
-	qrURL, _ := res["url"].(string)
+	trackID, _ := res["trackId"].(string)
+	if trackID == "" {
+		trackID, _ = res["track_id"].(string)
+	}
+	qrURL, _ := res["qrLink"].(string)
+	if qrURL == "" {
+		qrURL, _ = res["qr_link"].(string)
+	}
+	if qrURL == "" {
+		qrURL, _ = res["url"].(string)
+	}
+	if trackID == "" {
+		return nil, fmt.Errorf("qr response did not contain track id: %v", res)
+	}
 	if qrURL != "" {
 		if err := f.QrHandler.HandleQr(ctx, qrURL); err != nil {
 			return nil, err
 		}
 	}
 
-	// Poll until approved or expired
-	ticker := time.NewTicker(2 * time.Second)
+	interval := 2 * time.Second
+	if ms, ok := authInt64(res["pollingInterval"]); ok && ms > 0 {
+		interval = time.Duration(ms) * time.Millisecond
+	}
+	expiresAt := time.Now().Add(5 * time.Minute)
+	if ms, ok := authInt64(res["expiresAt"]); ok && ms > 0 {
+		expiresAt = time.UnixMilli(ms)
+	}
+
+	// Poll until the phone confirms the QR code or the track expires.
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -430,19 +470,89 @@ func (f *QrAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker) (*Au
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			statusRes, err := invoker.Invoke(ctx, protocol.OpAuth, map[string]interface{}{
-				"type": "POLL_QR",
+			if time.Now().After(expiresAt) {
+				return nil, fmt.Errorf("qr authentication expired")
+			}
+			statusRes, err := invoker.Invoke(ctx, protocol.OpGetQrStatus, map[string]interface{}{
+				"trackId": trackID,
 			})
-			if err == nil {
-				token, _ := statusRes["token"].(string)
-				if token != "" {
-					var uid int64
-					if u, ok := statusRes["userId"].(int64); ok {
-						uid = u
-					}
-					return &AuthResult{Token: token, UserID: uid}, nil
+			if err != nil {
+				continue
+			}
+			approved := false
+			if status, ok := statusRes["status"].(map[string]interface{}); ok {
+				approved, _ = status["loginAvailable"].(bool)
+				if !approved {
+					approved, _ = status["login_available"].(bool)
 				}
 			}
+			if !approved {
+				approved, _ = statusRes["loginAvailable"].(bool)
+			}
+			if !approved {
+				continue
+			}
+
+			confirmed, err := invoker.Invoke(ctx, protocol.OpLoginByQr, map[string]interface{}{
+				"trackId": trackID,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("confirm qr login failed: %w", err)
+			}
+			token, _ := extractToken(confirmed)
+			if token == "" {
+				if challenge, ok := confirmed["passwordChallenge"].(map[string]interface{}); ok {
+					passwordTrack, _ := challenge["trackId"].(string)
+					hint, _ := challenge["hint"].(string)
+					password, pErr := f.password(ctx, hint)
+					if pErr != nil {
+						return nil, pErr
+					}
+					confirmed, err = invoker.Invoke(ctx, protocol.OpAuthLoginCheckPassword, map[string]interface{}{
+						"trackId": passwordTrack, "password": password,
+					})
+					if err != nil {
+						return nil, fmt.Errorf("qr 2fa verification failed: %w", err)
+					}
+					token, _ = extractToken(confirmed)
+				}
+			}
+			if token == "" {
+				return nil, fmt.Errorf("qr login completed without token: %v", confirmed)
+			}
+			var uid int64
+			if u, ok := authInt64(confirmed["userId"]); ok {
+				uid = u
+			}
+			return &AuthResult{Token: token, UserID: uid}, nil
 		}
 	}
+}
+
+func (f *QrAuthFlow) password(ctx context.Context, hint string) (string, error) {
+	if provider, ok := f.PasswordProvider.(PasswordProviderWithHint); ok {
+		return provider.GetPasswordWithHint(ctx, hint)
+	}
+	return f.PasswordProvider.GetPassword(ctx)
+}
+
+func authInt64(value interface{}) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case uint64:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case string:
+		var parsed int64
+		if _, err := fmt.Sscan(v, &parsed); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }

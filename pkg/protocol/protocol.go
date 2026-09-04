@@ -102,7 +102,7 @@ func (p *TcpProtocol) Decode(raw []byte) (*InboundFrame, error) {
 		Cmd:     hdr.Cmd,
 		Seq:     hdr.Seq,
 		Payload: payload,
-		Raw:     payload,
+		Raw:     append([]byte(nil), raw[:totalLen]...),
 	}, nil
 }
 
@@ -153,8 +153,9 @@ func (w *WsProtocol) Decode(raw []byte) (*InboundFrame, error) {
 	if raw[0] == '{' || !w.binary {
 		var f InboundFrame
 		if err := json.Unmarshal(raw, &f); err != nil {
-			return &InboundFrame{}, nil
+			return nil, fmt.Errorf("decode websocket json frame: %w", err)
 		}
+		f.Raw = append([]byte(nil), raw...)
 		return &f, nil
 	}
 

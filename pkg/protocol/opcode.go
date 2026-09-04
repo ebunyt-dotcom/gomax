@@ -211,7 +211,7 @@ const (
 	OpAuthQrApprove                Opcode = 290 // Approve QR login from mobile client
 	OpLoginByQr                    Opcode = 291 // Finalize login via approved QR code
 	OpNotifBanners                 Opcode = 292 // Event: App announcement banners
-	OpNotifTranscription          Opcode = 293 // Event: Voice-to-text async result ready
+	OpNotifTranscription           Opcode = 293 // Event: Voice-to-text async result ready
 	OpChatSuggest                  Opcode = 300 // Suggested chats / channels
 	OpAudioPlay                    Opcode = 301 // Audio playback URL resolution
 	OpBannersGet                   Opcode = 302 // Fetch marketing / system banners
@@ -398,7 +398,7 @@ var opcodeNames = map[Opcode]string{
 	OpAuthQrApprove:                "AUTH_QR_APPROVE",
 	OpLoginByQr:                    "LOGIN_BY_QR",
 	OpNotifBanners:                 "NOTIF_BANNERS",
-	OpNotifTranscription:          "NOTIF_TRANSCRIPTION",
+	OpNotifTranscription:           "NOTIF_TRANSCRIPTION",
 	OpChatSuggest:                  "CHAT_SUGGEST",
 	OpAudioPlay:                    "AUDIO_PLAY",
 	OpBannersGet:                   "BANNERS_GET",

@@ -11,7 +11,7 @@
 | Действие | Код GoMax | Опкод | Раздел документации |
 | :--- | :--- | :---: | :--- |
 | **Вход по SMS** | `gomax.NewClient(cfg).Start(ctx)` | `17, 18` | [SMS-авторизация](authentication/sms.md) |
-| **QR Вход (Web)** | `gomax.NewWebClient(cfg).Start(ctx)` | `17, 18` | [QR-авторизация](authentication/qr.md) |
+| **QR Вход (Web)** | `gomax.NewWebClient(cfg).Start(ctx)` | `288, 289, 291` | [QR-авторизация](authentication/qr.md) |
 | **Отправка сообщения** | `client.Messages.SendMessage(ctx, chatID, text, 0, nil)` | `64` | [Сообщения](api/messages.md) |
 | **Установка реакции** | `client.Messages.AddReaction(ctx, chatID, msgID, "🔥")` | `178` | [Сообщения](api/messages.md) / [Масс-реакции](mass-actions/reactions.md) |
 | **Масслукинг (просмотры)**| `client.Messages.ReadMessages(ctx, chatID, ids)` | `50` | [Сообщения](api/messages.md) / [Масслукинг](mass-actions/views.md) |

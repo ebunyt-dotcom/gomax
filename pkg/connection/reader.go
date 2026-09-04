@@ -10,9 +10,8 @@ import (
 )
 
 const (
-	// MaxPayloadSize defines the maximum permissible payload size in bytes (16 MB).
-	// 24-bit max length is 16,777,215 bytes.
-	MaxPayloadSize = 16 * 1024 * 1024
+	// MaxPayloadSize mirrors the protocol's 24-bit wire limit exactly.
+	MaxPayloadSize = protocol.MaxPayloadLen
 )
 
 var (
@@ -44,6 +43,9 @@ func (r *TCPReader) ReadFrame() ([]byte, error) {
 	// 1. Read exactly 10 bytes header
 	headerBytes, err := r.t.Recv(protocol.HeaderSize)
 	if err != nil {
+		if len(headerBytes) > 0 && len(headerBytes) < protocol.HeaderSize {
+			return nil, io.ErrUnexpectedEOF
+		}
 		if errors.Is(err, io.EOF) {
 			return nil, io.EOF
 		}
@@ -73,7 +75,7 @@ func (r *TCPReader) ReadFrame() ([]byte, error) {
 	// 5. Read exactly PayloadLen bytes
 	payloadBytes, err := r.t.Recv(int(header.PayloadLen))
 	if err != nil {
-		if errors.Is(err, io.EOF) {
+		if len(payloadBytes) > 0 || errors.Is(err, io.EOF) {
 			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, fmt.Errorf("read payload: %w", err)

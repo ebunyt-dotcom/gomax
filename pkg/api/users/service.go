@@ -45,6 +45,17 @@ func (s *UserService) GetUser(ctx context.Context, userID int64) (*types.User, e
 	return user, nil
 }
 
+// GetCachedUser is kept as an explicit Go API hook. GoMax currently leaves
+// caching to the caller, so it performs one regular lookup.
+func (s *UserService) GetCachedUser(ctx context.Context, userID int64) (*types.User, error) {
+	return s.GetUser(ctx, userID)
+}
+
+// FetchUsers is the uncached batch lookup counterpart to GetUsers.
+func (s *UserService) FetchUsers(ctx context.Context, userIDs []int64) ([]types.User, error) {
+	return s.GetUsers(ctx, userIDs)
+}
+
 // GetUsers retrieves multiple user profiles in batch.
 func (s *UserService) GetUsers(ctx context.Context, userIDs []int64) ([]types.User, error) {
 	payload := map[string]interface{}{
@@ -110,6 +121,11 @@ func (s *UserService) SearchUsers(ctx context.Context, query string) ([]types.Us
 	return users, nil
 }
 
+// SearchByPhone resolves a user by phone number.
+func (s *UserService) SearchByPhone(ctx context.Context, phone string) (*types.User, error) {
+	return s.GetUserByPhone(ctx, phone)
+}
+
 // GetContacts returns the user's complete contact list.
 func (s *UserService) GetContacts(ctx context.Context) ([]types.User, error) {
 	res, err := s.invoker.Invoke(ctx, protocol.OpContactList, map[string]interface{}{})
@@ -163,12 +179,12 @@ func (s *UserService) GetSelf(ctx context.Context) (*types.User, error) {
 
 // SessionItem represents an active device session.
 type SessionItem struct {
-	ID        int64  `json:"id"`
-	Device    string `json:"device"`
-	Location  string `json:"location"`
-	Client    string `json:"client"`
-	IP        string `json:"ip"`
-	LastActive int64 `json:"last_active"`
+	ID         int64  `json:"id"`
+	Device     string `json:"device"`
+	Location   string `json:"location"`
+	Client     string `json:"client"`
+	IP         string `json:"ip"`
+	LastActive int64  `json:"last_active"`
 }
 
 // GetActiveSessions retrieves all active device sessions for this account.
@@ -199,6 +215,11 @@ func (s *UserService) GetActiveSessions(ctx context.Context) ([]SessionItem, err
 		}
 	}
 	return sessions, nil
+}
+
+// GetSessions is the PyMax-compatible name for GetActiveSessions.
+func (s *UserService) GetSessions(ctx context.Context) ([]SessionItem, error) {
+	return s.GetActiveSessions(ctx)
 }
 
 // CloseSession terminates a specific remote active session by ID.
@@ -239,11 +260,63 @@ func (s *UserService) AddContact(ctx context.Context, userID int64, firstName, l
 	if phone != "" {
 		payload["phone"] = phone
 	}
-	_, err := s.invoker.Invoke(ctx, protocol.OpContactAdd, payload)
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, payload)
 	if err != nil {
 		return fmt.Errorf("add contact failed: %w", err)
 	}
 	return nil
+}
+
+// AddContactByID follows PyMax's compact CONTACT_UPDATE payload.
+func (s *UserService) AddContactByID(ctx context.Context, contactID int64) (*types.User, error) {
+	res, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, map[string]interface{}{
+		"contactId": contactID, "action": "ADD",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("add contact failed: %w", err)
+	}
+	user := &types.User{ID: contactID}
+	if data, ok := res["contact"].(map[string]interface{}); ok {
+		if v, ok := data["id"].(int64); ok {
+			user.ID = v
+		}
+		if v, ok := data["firstName"].(string); ok {
+			user.FirstName = v
+		}
+		if v, ok := data["lastName"].(string); ok {
+			user.LastName = v
+		}
+	}
+	return user, nil
+}
+
+// RemoveContact removes a user from the contact list.
+func (s *UserService) RemoveContact(ctx context.Context, contactID int64) error {
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, map[string]interface{}{
+		"contactId": contactID, "action": "REMOVE",
+	})
+	if err != nil {
+		return fmt.Errorf("remove contact failed: %w", err)
+	}
+	return nil
+}
+
+// ImportContacts imports phone/name pairs into the account contacts.
+func (s *UserService) ImportContacts(ctx context.Context, contacts map[string]string) ([]types.User, error) {
+	contactList := make(map[string]interface{}, len(contacts))
+	for phone, firstName := range contacts {
+		contactList[phone] = map[string]interface{}{"firstName": firstName}
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpSync, map[string]interface{}{"contactList": contactList})
+	if err != nil {
+		return nil, fmt.Errorf("import contacts failed: %w", err)
+	}
+	return usersFromResponse(res), nil
+}
+
+// GetChatID returns the deterministic dialog ID used by Max for two users.
+func (s *UserService) GetChatID(_ context.Context, firstUserID, secondUserID int64) int64 {
+	return firstUserID ^ secondUserID
 }
 
 // UpdateContact renames or edits an existing contact's display name.
@@ -293,4 +366,26 @@ func (s *UserService) GetUserByPhone(ctx context.Context, phone string) (*types.
 	return user, nil
 }
 
+func usersFromResponse(res map[string]interface{}) []types.User {
+	var out []types.User
+	list, _ := res["contacts"].([]interface{})
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		u := types.User{Phone: stringOrEmpty(m["phone"])}
+		if v, ok := m["id"].(int64); ok {
+			u.ID = v
+		} else if v, ok := m["id"].(float64); ok {
+			u.ID = int64(v)
+		}
+		if v, ok := m["firstName"].(string); ok {
+			u.FirstName = v
+		}
+		out = append(out, u)
+	}
+	return out
+}
 
+func stringOrEmpty(value interface{}) string { v, _ := value.(string); return v }

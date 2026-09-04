@@ -14,6 +14,12 @@ import (
 const (
 	// WrappedValueExtCode is the extension type ID used by Max server for wrapped serialized structures.
 	WrappedValueExtCode int8 = 1
+	// MaxMapEntries prevents a forged MessagePack map header from forcing a
+	// huge allocation before the decoder has seen enough bytes to support it.
+	MaxMapEntries = 1 << 20
+	// MaxExtensionSize bounds an extension allocation independently of the
+	// decompression limit; extensions are small wrappers in the Max protocol.
+	MaxExtensionSize = 5 * 1024 * 1024
 )
 
 // Ext represents a MessagePack extension type with a type code and raw payload bytes.
@@ -40,6 +46,9 @@ func init() {
 	for id := -128; id <= 127; id++ {
 		code := int8(id)
 		msgpack.RegisterExtDecoder(code, (*Ext)(nil), func(dec *msgpack.Decoder, v reflect.Value, extLen int) error {
+			if extLen < 0 || extLen > MaxExtensionSize {
+				return fmt.Errorf("protocol: extension payload too large: %d bytes", extLen)
+			}
 			b := make([]byte, extLen)
 			if err := dec.ReadFull(b); err != nil {
 				return err
@@ -85,6 +94,12 @@ func (c *MsgpackCodec) Decode(payloadBytes []byte) (any, error) {
 		}
 		if n == -1 {
 			return nil, nil
+		}
+		// Every map entry consumes at least a key and a value byte. Comparing
+		// with the remaining input rejects impossible forged lengths while
+		// still permitting the full protocol payload size.
+		if n > MaxMapEntries || n > len(payloadBytes) {
+			return nil, fmt.Errorf("protocol: map contains too many entries: %d", n)
 		}
 		m := make(map[string]any, n)
 		for i := 0; i < n; i++ {

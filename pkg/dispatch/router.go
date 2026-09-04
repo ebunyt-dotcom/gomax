@@ -16,6 +16,12 @@ type MessageEditHandler func(ctx context.Context, msg *types.Message) error
 // MessageDeleteHandler handles message delete events.
 type MessageDeleteHandler func(ctx context.Context, chatID, msgID int64) error
 
+// MessageReadHandler handles server read-marker notifications.
+type MessageReadHandler func(ctx context.Context, ev *types.MessageReadEvent) error
+
+// UserUpdateHandler handles contact/profile updates.
+type UserUpdateHandler func(ctx context.Context, ev *types.UserUpdateEvent) error
+
 // ReactionHandler handles reaction add/remove events.
 type ReactionHandler func(ctx context.Context, ev *types.ReactionEvent) error
 
@@ -52,6 +58,8 @@ type Router struct {
 	filteredHandlers    []filteredHandler
 	messageEditHandlers []MessageEditHandler
 	messageDelHandlers  []MessageDeleteHandler
+	messageReadHandlers []MessageReadHandler
+	userUpdateHandlers  []UserUpdateHandler
 	reactionHandlers    []ReactionHandler
 	chatUpdateHandlers  []ChatUpdateHandler
 	presenceHandlers    []PresenceHandler
@@ -88,6 +96,20 @@ func (r *Router) OnMessageDelete(handler MessageDeleteHandler) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messageDelHandlers = append(r.messageDelHandlers, handler)
+}
+
+// OnMessageRead registers a read-marker handler.
+func (r *Router) OnMessageRead(handler MessageReadHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.messageReadHandlers = append(r.messageReadHandlers, handler)
+}
+
+// OnUserUpdate registers a contact/profile update handler.
+func (r *Router) OnUserUpdate(handler UserUpdateHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userUpdateHandlers = append(r.userUpdateHandlers, handler)
 }
 
 // OnReaction registers a handler for reaction add/remove events.
@@ -187,6 +209,26 @@ func (r *Router) DispatchMessageDelete(ctx context.Context, chatID, msgID int64)
 		go func(handler MessageDeleteHandler) {
 			_ = handler(ctx, chatID, msgID)
 		}(h)
+	}
+}
+
+// DispatchMessageRead routes a read-marker event.
+func (r *Router) DispatchMessageRead(ctx context.Context, ev *types.MessageReadEvent) {
+	r.mu.RLock()
+	handlers := append([]MessageReadHandler(nil), r.messageReadHandlers...)
+	r.mu.RUnlock()
+	for _, h := range handlers {
+		go func(handler MessageReadHandler) { _ = handler(ctx, ev) }(h)
+	}
+}
+
+// DispatchUserUpdate routes a contact/profile event.
+func (r *Router) DispatchUserUpdate(ctx context.Context, ev *types.UserUpdateEvent) {
+	r.mu.RLock()
+	handlers := append([]UserUpdateHandler(nil), r.userUpdateHandlers...)
+	r.mu.RUnlock()
+	for _, h := range handlers {
+		go func(handler UserUpdateHandler) { _ = handler(ctx, ev) }(h)
 	}
 }
 

@@ -61,10 +61,12 @@ type ReactionInfo struct {
 type AttachmentType string
 
 const (
-	AttachmentPhoto     AttachmentType = "PHOTO"
-	AttachmentVideo     AttachmentType = "VIDEO"
-	AttachmentAudio     AttachmentType = "AUDIO"
-	AttachmentFile      AttachmentType = "FILE"
+	AttachmentPhoto AttachmentType = "PHOTO"
+	AttachmentVideo AttachmentType = "VIDEO"
+	AttachmentAudio AttachmentType = "AUDIO"
+	AttachmentFile  AttachmentType = "FILE"
+	// Voice and video-note are Go convenience types; attachmentPayload maps
+	// them to PyMax's AUDIO and VIDEO wire types respectively.
 	AttachmentVoice     AttachmentType = "VOICE"
 	AttachmentVideoNote AttachmentType = "VIDEO_NOTE"
 	AttachmentPoll      AttachmentType = "POLL"
@@ -152,4 +154,3 @@ type TypingEvent struct {
 	ChatID int64 `json:"chat_id" msgpack:"chat_id"`
 	UserID int64 `json:"user_id" msgpack:"user_id"`
 }
-

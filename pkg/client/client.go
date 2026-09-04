@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	authapi "github.com/ebunyt-dotcom/gomax/pkg/api/auth"
+	"github.com/ebunyt-dotcom/gomax/pkg/api/bots"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
 	selfapi "github.com/ebunyt-dotcom/gomax/pkg/api/selfapi"
@@ -27,7 +29,6 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
-
 
 // Config configures client network endpoints and session behavior.
 type Config struct {
@@ -45,9 +46,43 @@ type Config struct {
 	PersistSession bool
 	Reconnect      bool
 	ReconnectDelay time.Duration
+	RequestTimeout time.Duration
+	Interactive    bool
+	UploadTimeout  time.Duration
 
-	Store    session.Store
-	AuthFlow auth.SmsAuthFlow
+	// Device/user-agent fields mirror PyMax's ExtraConfig and can be used to
+	// override the built-in Android profile sent during handshake and login.
+	DeviceType     string
+	AppVersion     string
+	BuildNumber    int
+	OSVersion      string
+	Timezone       string
+	Screen         string
+	Locale         string
+	DeviceLocale   string
+	DeviceName     string
+	Arch           string
+	PushDeviceType string
+	UserAgent      map[string]interface{}
+
+	Registration *RegistrationConfig
+
+	Store session.Store
+
+	// AuthFlow allows callers to provide a custom SMS/2FA flow. A pointer is
+	// used so the value returned by auth.NewSmsAuthFlow can be assigned
+	// directly and so the flow can retain provider state between retries.
+	AuthFlow *auth.SmsAuthFlow
+	// QrAuthFlow is used by WebClient. It lives here because Config is shared
+	// by Client and WebClient while the concrete flow remains optional.
+	QrAuthFlow *auth.QrAuthFlow
+}
+
+// RegistrationConfig contains the profile fields required to finish a new
+// account login when SMS verification returns a registration token.
+type RegistrationConfig struct {
+	FirstName string
+	LastName  string
 }
 
 // DefaultConfig returns default client configuration matching PyMax.
@@ -61,8 +96,96 @@ func DefaultConfig() *Config {
 		SessionName:    "main.json",
 		PersistSession: true,
 		Reconnect:      true,
-		ReconnectDelay: 3 * time.Second,
+		ReconnectDelay: time.Second,
+		RequestTimeout: 30 * time.Second,
+		Interactive:    true,
+		UploadTimeout:  15 * time.Minute,
+		DeviceType:     "ANDROID",
+		AppVersion:     "26.25.0",
+		BuildNumber:    6790,
+		OSVersion:      "Android 14",
+		Timezone:       "Europe/Moscow",
+		Screen:         "405dpi 405dpi 1080x2400",
+		Locale:         "ru",
+		DeviceLocale:   "ru",
+		DeviceName:     "Samsung SM-A536B",
+		Arch:           "arm64-v8a",
+		PushDeviceType: "GCM",
 	}
+}
+
+func applyDefaults(cfg *Config, web bool) {
+	defaults := DefaultConfig()
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = defaults.RequestTimeout
+	}
+	if cfg.ReconnectDelay <= 0 {
+		cfg.ReconnectDelay = defaults.ReconnectDelay
+	}
+	if cfg.AppVersion == "" {
+		cfg.AppVersion = defaults.AppVersion
+	}
+	if cfg.BuildNumber == 0 {
+		cfg.BuildNumber = defaults.BuildNumber
+	}
+	if cfg.DeviceType == "" {
+		cfg.DeviceType = defaults.DeviceType
+	}
+	if cfg.OSVersion == "" {
+		cfg.OSVersion = defaults.OSVersion
+	}
+	if cfg.Timezone == "" {
+		cfg.Timezone = defaults.Timezone
+	}
+	if cfg.Screen == "" {
+		cfg.Screen = defaults.Screen
+	}
+	if cfg.Locale == "" {
+		cfg.Locale = defaults.Locale
+	}
+	if cfg.DeviceLocale == "" {
+		cfg.DeviceLocale = defaults.DeviceLocale
+	}
+	if cfg.DeviceName == "" {
+		cfg.DeviceName = defaults.DeviceName
+	}
+	if cfg.Arch == "" {
+		cfg.Arch = defaults.Arch
+	}
+	if cfg.PushDeviceType == "" {
+		cfg.PushDeviceType = defaults.PushDeviceType
+	}
+	if web {
+		cfg.DeviceType = "WEB"
+		cfg.AppVersion = "26.8.4"
+		cfg.BuildNumber = 0
+		cfg.OSVersion = "Linux"
+		cfg.Screen = "1080x1920 1.0x"
+		cfg.DeviceName = "Chrome"
+		cfg.PushDeviceType = ""
+	}
+}
+
+func mobileUserAgent(cfg *Config) map[string]interface{} {
+	if cfg.UserAgent != nil {
+		return cfg.UserAgent
+	}
+	userAgent := map[string]interface{}{
+		"deviceType":   cfg.DeviceType,
+		"appVersion":   cfg.AppVersion,
+		"osVersion":    cfg.OSVersion,
+		"timezone":     cfg.Timezone,
+		"screen":       cfg.Screen,
+		"locale":       cfg.Locale,
+		"deviceLocale": cfg.DeviceLocale,
+		"buildNumber":  cfg.BuildNumber,
+		"deviceName":   cfg.DeviceName,
+		"arch":         cfg.Arch,
+	}
+	if cfg.PushDeviceType != "" {
+		userAgent["pushDeviceType"] = cfg.PushDeviceType
+	}
+	return userAgent
 }
 
 // Client is the primary high-level TCP client for Max API.
@@ -75,9 +198,11 @@ type Client struct {
 	callsSeed int64
 
 	Messages *messages.MessageService
+	Auth     *authapi.AuthService
 	Chats    *chats.ChatService
 	Users    *users.UserService
 	Uploads  *uploads.UploadService
+	Bots     *bots.BotsService
 	Self     *selfapi.SelfService
 
 	Me      *types.User
@@ -102,6 +227,14 @@ func (c *Client) GetDeviceID() string {
 // GetCallsSeed returns the handshake callsSeed.
 func (c *Client) GetCallsSeed() int64 {
 	return c.CallsSeed()
+}
+
+// SetInteractive changes the interactive/presence flag used by the next
+// session and reconnects. It mirrors PyMax SelfService.set_presence.
+func (c *Client) SetInteractive(online bool) {
+	c.mu.Lock()
+	c.cfg.Interactive = online
+	c.mu.Unlock()
 }
 
 // NonRecoverableError indicates an error that should terminate client.Start immediately without reconnecting.
@@ -184,13 +317,7 @@ func NewClient(cfg *Config) *Client {
 	if cfg.Port == 0 {
 		cfg.Port = 443
 	}
-	if cfg.DeviceID == "" {
-		cfg.DeviceID = randomHex(8)
-	}
-	if cfg.MtInstanceID == "" {
-		cfg.MtInstanceID = randomHex(8)
-	}
-
+	applyDefaults(cfg, false)
 	var store session.Store
 	if cfg.Store != nil {
 		store = cfg.Store
@@ -208,9 +335,11 @@ func NewClient(cfg *Config) *Client {
 	}
 
 	c.Messages = messages.NewMessageService(c)
+	c.Auth = authapi.NewAuthService(c)
 	c.Chats = chats.NewChatService(c)
 	c.Users = users.NewUserService(c)
 	c.Uploads = uploads.NewUploadService(c)
+	c.Bots = bots.NewBotsService(c)
 	c.Self = selfapi.NewSelfService(c)
 
 	return c
@@ -234,6 +363,16 @@ func (c *Client) OnMessageEdit(handler func(ctx context.Context, msg *types.Mess
 // OnMessageDelete registers a handler for message delete events.
 func (c *Client) OnMessageDelete(handler func(ctx context.Context, chatID, msgID int64) error) {
 	c.router.OnMessageDelete(handler)
+}
+
+// OnMessageRead registers a read-marker handler.
+func (c *Client) OnMessageRead(handler func(ctx context.Context, ev *types.MessageReadEvent) error) {
+	c.router.OnMessageRead(handler)
+}
+
+// OnUserUpdate registers a contact/profile update handler.
+func (c *Client) OnUserUpdate(handler func(ctx context.Context, ev *types.UserUpdateEvent) error) {
+	c.router.OnUserUpdate(handler)
 }
 
 // OnReaction registers a handler for reaction add/remove events.
@@ -261,6 +400,11 @@ func (c *Client) OnDisconnect(handler func(ctx context.Context, err error)) {
 	c.router.OnDisconnect(handler)
 }
 
+// OnRaw registers a handler for low-level event frames not consumed by a
+// typed event handler.
+func (c *Client) OnRaw(handler func(ctx context.Context, event *types.RawEvent) error) {
+	c.router.OnEvent(handler)
+}
 
 // Invoke implements the api.Invoker interface for RPC commands.
 func (c *Client) Invoke(ctx context.Context, op protocol.Opcode, payload interface{}) (map[string]interface{}, error) {
@@ -354,7 +498,10 @@ func (c *Client) runSession(ctx context.Context) error {
 		reader,
 		tcpTransport,
 		tcpProto,
-		nil,
+		&connection.Config{
+			Interactive:    c.cfg.Interactive,
+			RequestTimeout: c.cfg.RequestTimeout,
+		},
 		func(err error) {
 			select {
 			case disconnectCh <- err:
@@ -412,19 +559,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		clientSessionID = int(csID.Int64()) + 1
 	}
 
-	userAgent := map[string]interface{}{
-		"deviceType":     "ANDROID",
-		"appVersion":     "26.25.0",
-		"osVersion":      "Android 14",
-		"timezone":       "Europe/Moscow",
-		"screen":         "405dpi 405dpi 1080x2400",
-		"pushDeviceType": "GCM",
-		"arch":           "arm64-v8a",
-		"locale":         "ru",
-		"deviceLocale":   "ru",
-		"buildNumber":    6790,
-		"deviceName":     "Samsung SM-A536B",
-	}
+	userAgent := mobileUserAgent(c.cfg)
 
 	initPayload := map[string]interface{}{
 		"mt_instanceid":   c.cfg.MtInstanceID,
@@ -481,6 +616,9 @@ func (c *Client) runSession(ctx context.Context) error {
 		}
 		log.Printf("[gomax] No active session token found; starting SMS authentication for %s...", c.cfg.Phone)
 		smsFlow := c.cfg.AuthFlow
+		if smsFlow == nil {
+			smsFlow = auth.NewSmsAuthFlow(nil, nil)
+		}
 		if smsFlow.CodeProvider == nil {
 			smsFlow.CodeProvider = &auth.ConsoleCodeProvider{}
 		}
@@ -493,7 +631,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			smsFlow.FpGen = c.fpGen
 		}
 		if smsFlow.Arch == "" {
-			smsFlow.Arch = "arm64-v8a"
+			smsFlow.Arch = c.cfg.Arch
 		}
 
 		authRes, err := smsFlow.Authenticate(ctx, c, c.cfg.Phone)
@@ -502,6 +640,21 @@ func (c *Client) runSession(ctx context.Context) error {
 			return nonRecoverable(fmt.Errorf("authentication failed: %w", err))
 		}
 		token = authRes.Token
+		if authRes.IsRegister {
+			if c.cfg.Registration == nil || c.cfg.Registration.FirstName == "" {
+				_ = connManager.Close()
+				return nonRecoverable(errors.New("registration profile is required for a registration token"))
+			}
+			registration, regErr := c.Auth.ConfirmRegistration(ctx,
+				c.cfg.Registration.FirstName, c.cfg.Registration.LastName, token)
+			if regErr != nil {
+				_ = connManager.Close()
+				return nonRecoverable(regErr)
+			}
+			if registeredToken, ok := registration["token"].(string); ok && registeredToken != "" {
+				token = registeredToken
+			}
+		}
 		_ = c.store.SaveSession(&session.SessionInfo{
 			Token:        token,
 			Phone:        c.cfg.Phone,
@@ -515,18 +668,35 @@ func (c *Client) runSession(ctx context.Context) error {
 
 	// 3. Login
 	log.Printf("[gomax] Logging in with session token...")
+	syncState := session.SyncState{
+		ChatsSync:    -1,
+		ContactsSync: -1,
+		DraftsSync:   -1,
+		PresenceSync: -1,
+		ConfigHash:   session.DefaultConfigHash,
+	}
+	if sessInfo != nil {
+		syncState = sessInfo.Sync
+		if syncState.ConfigHash == "" {
+			syncState.ConfigHash = session.DefaultConfigHash
+		}
+	}
 	loginPayload := map[string]interface{}{
-		"token":         token,
-		"deviceId":      c.cfg.DeviceID,
-		"userAgent":     userAgent,
-		"chatsSync":     -1,
-		"contactsSync":  -1,
-		"presenceSync":  -1,
-		"draftsSync":    -1,
-		"interactive":   true,
+		"token":        token,
+		"deviceId":     c.cfg.DeviceID,
+		"userAgent":    userAgent,
+		"chatsSync":    syncState.ChatsSync,
+		"contactsSync": syncState.ContactsSync,
+		"presenceSync": syncState.PresenceSync,
+		"draftsSync":   syncState.DraftsSync,
+		"interactive":  c.cfg.Interactive,
+		// These fields are part of PyMax's mobile SyncPayload. In particular,
+		// exp.chatsCountGroups is a small MessagePack binary value, not a map.
+		"exp":        map[string]interface{}{"chatsCountGroups": []byte{0x0a, 0x32}},
+		"configHash": syncState.ConfigHash,
 	}
 	if callsSeed != 0 {
-		fp, _ := c.fpGen.GenerateFingerprint(c.cfg.DeviceID, callsSeed, "arm64-v8a")
+		fp, _ := c.fpGen.GenerateFingerprint(c.cfg.DeviceID, callsSeed, c.cfg.Arch)
 		if len(fp) > 0 {
 			loginPayload["chatCacheFingerprint"] = fp
 			loginPayload["fingerprint"] = fp
@@ -554,6 +724,24 @@ func (c *Client) runSession(ctx context.Context) error {
 		token = newToken
 		_ = c.store.UpdateToken(c.cfg.Phone, token)
 	}
+	if syncTime, ok := extractInt64(loginRes["time"]); ok {
+		syncState.ChatsSync = syncTime
+		syncState.ContactsSync = syncTime
+		syncState.DraftsSync = syncTime
+		syncState.PresenceSync = syncTime
+	}
+	if config, ok := loginRes["config"].(map[string]interface{}); ok {
+		if hash, ok := config["hash"].(string); ok && hash != "" {
+			syncState.ConfigHash = hash
+		}
+	}
+	_ = c.store.SaveSession(&session.SessionInfo{
+		Token:        token,
+		Phone:        c.cfg.Phone,
+		DeviceID:     c.cfg.DeviceID,
+		MTInstanceID: c.cfg.MtInstanceID,
+		Sync:         syncState,
+	})
 
 	// Resolve Self User profile
 	c.Me = &types.User{}
@@ -693,6 +881,31 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 	}
 
 	switch frame.Opcode {
+	case protocol.OpNotifAttach:
+		c.Uploads.NotifyReady(frame.Payload)
+		c.router.DispatchEvent(ctx, &types.RawEvent{
+			Opcode: uint16(frame.Opcode), Payload: frame.Payload,
+		})
+
+	case protocol.OpNotifMark:
+		ev := &types.MessageReadEvent{}
+		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
+		ev.Mark, _ = extractInt64(frame.Payload["mark"])
+		c.router.DispatchMessageRead(ctx, ev)
+
+	case protocol.OpNotifContact:
+		src := frame.Payload
+		if contact, ok := frame.Payload["contact"].(map[string]interface{}); ok {
+			src = contact
+		}
+		user := types.User{}
+		user.ID, _ = extractInt64(src["id"])
+		user.FirstName, _ = src["firstName"].(string)
+		user.LastName, _ = src["lastName"].(string)
+		user.Phone, _ = src["phone"].(string)
+		c.router.DispatchUserUpdate(ctx, &types.UserUpdateEvent{User: user})
+
 	// Incoming new message
 	case protocol.OpMsgSend, protocol.OpNotifMessage:
 		msg := c.parseMessage(frame.Payload)
@@ -816,4 +1029,3 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
-

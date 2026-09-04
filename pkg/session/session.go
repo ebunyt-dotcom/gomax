@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// DefaultConfigHash is the server's initial configuration marker used by
+// PyMax when no configuration has been synchronized yet.
+const DefaultConfigHash = "00000000-0000000000000000-00000000-0000000000000000-0000000000000000-0-0000000000000000-00000000"
+
 // SyncState holds incremental sync tokens.
 type SyncState struct {
 	ChatsSync    int64  `json:"chats_sync"`
@@ -42,6 +46,18 @@ type Store interface {
 	UpdateToken(phone, newToken string) error
 }
 
+// ExtendedStore is the optional full session-store contract implemented by
+// the built-in stores. Store remains small so custom stores written against
+// earlier GoMax versions continue to work.
+type ExtendedStore interface {
+	Store
+	LoadSessionByDeviceID(deviceID string) (*SessionInfo, error)
+	LoadSessionByPhone(phone string) (*SessionInfo, error)
+	DeleteSession(token string) error
+	DeleteAllSessions() error
+	Close() error
+}
+
 // InMemoryStore stores session in RAM.
 type InMemoryStore struct {
 	mu      sync.RWMutex
@@ -74,6 +90,38 @@ func (s *InMemoryStore) UpdateToken(phone, newToken string) error {
 	}
 	return nil
 }
+
+func (s *InMemoryStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.session == nil || s.session.DeviceID != deviceID {
+		return nil, nil
+	}
+	copy := *s.session
+	return &copy, nil
+}
+
+func (s *InMemoryStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.session == nil || s.session.Phone != phone {
+		return nil, nil
+	}
+	copy := *s.session
+	return &copy, nil
+}
+
+func (s *InMemoryStore) DeleteSession(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session != nil && (token == "" || s.session.Token == token) {
+		s.session = nil
+	}
+	return nil
+}
+
+func (s *InMemoryStore) DeleteAllSessions() error { return s.DeleteSession("") }
+func (s *InMemoryStore) Close() error             { return nil }
 
 // FileStore persists session data to a JSON file.
 type FileStore struct {
@@ -137,3 +185,36 @@ func (s *FileStore) UpdateToken(phone, newToken string) error {
 	info.Token = newToken
 	return s.SaveSession(info)
 }
+
+func (s *FileStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error) {
+	info, err := s.LoadSession()
+	if err != nil || info == nil || info.DeviceID != deviceID {
+		return nil, err
+	}
+	return info, nil
+}
+
+func (s *FileStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
+	info, err := s.LoadSession()
+	if err != nil || info == nil || info.Phone != phone {
+		return nil, err
+	}
+	return info, nil
+}
+
+func (s *FileStore) DeleteSession(token string) error {
+	info, err := s.LoadSession()
+	if err != nil || info == nil || (token != "" && info.Token != token) {
+		if info == nil && err == nil {
+			return nil
+		}
+		return err
+	}
+	if err := os.Remove(s.filePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *FileStore) DeleteAllSessions() error { return s.DeleteSession("") }
+func (s *FileStore) Close() error             { return nil }

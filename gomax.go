@@ -3,6 +3,7 @@
 package gomax
 
 import (
+	authflow "github.com/ebunyt-dotcom/gomax/pkg/auth"
 	"github.com/ebunyt-dotcom/gomax/pkg/client"
 	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
@@ -62,6 +63,17 @@ type (
 
 	// ChatType classifies the chat kind.
 	ChatType = types.ChatType
+
+	// InitData contains bot web-app initialization data.
+	InitData = types.InitData
+
+	SmsAuthFlow          = authflow.SmsAuthFlow
+	QrAuthFlow           = authflow.QrAuthFlow
+	CodeProvider         = authflow.CodeProvider
+	PasswordProvider     = authflow.PasswordProvider
+	PasswordProviderHint = authflow.PasswordProviderWithHint
+	QrHandler            = authflow.QrHandler
+	AuthResult           = authflow.AuthResult
 )
 
 // Attachment type constants re-exported for convenience.
@@ -96,4 +108,14 @@ func NewWebClient(cfg *Config) *WebClient {
 // DefaultConfig returns default client configuration.
 func DefaultConfig() *Config {
 	return client.DefaultConfig()
+}
+
+// NewSmsAuthFlow creates a configurable SMS/2FA authentication flow.
+func NewSmsAuthFlow(codeProvider CodeProvider, passwordProvider PasswordProvider) *SmsAuthFlow {
+	return authflow.NewSmsAuthFlow(codeProvider, passwordProvider)
+}
+
+// NewQrAuthFlow creates a configurable QR authentication flow.
+func NewQrAuthFlow(handler QrHandler, passwordProvider PasswordProvider) *QrAuthFlow {
+	return authflow.NewQrAuthFlow(handler, passwordProvider)
 }

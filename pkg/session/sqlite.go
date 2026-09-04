@@ -103,3 +103,47 @@ func (s *SqliteStore) UpdateToken(phone, newToken string) error {
 	_, err := s.db.Exec(query, newToken, phone)
 	return err
 }
+
+// LoadSessionByDeviceID loads a session associated with a device ID.
+func (s *SqliteStore) LoadSessionByDeviceID(deviceID string) (*SessionInfo, error) {
+	return s.loadWhere("device_id = ?", deviceID)
+}
+
+// LoadSessionByPhone loads a session associated with a phone number.
+func (s *SqliteStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
+	return s.loadWhere("phone = ?", phone)
+}
+
+func (s *SqliteStore) loadWhere(where string, arg interface{}) (*SessionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(`SELECT phone, token, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash FROM max_sessions WHERE `+where+` LIMIT 1`, arg)
+	var info SessionInfo
+	if err := row.Scan(&info.Phone, &info.Token, &info.DeviceID, &info.MTInstanceID, &info.Sync.ChatsSync, &info.Sync.ContactsSync, &info.Sync.DraftsSync, &info.Sync.PresenceSync, &info.Sync.ConfigHash); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &info, nil
+}
+
+// DeleteSession deletes one session by its token.
+func (s *SqliteStore) DeleteSession(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM max_sessions WHERE token = ?`, token)
+	return err
+}
+
+// DeleteAllSessions removes all persisted sessions.
+func (s *SqliteStore) DeleteAllSessions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM max_sessions`)
+	return err
+}
+
+// Close closes the database owned by the caller. It is provided for Store
+// symmetry; callers should not reuse the *sql.DB after calling it.
+func (s *SqliteStore) Close() error { return s.db.Close() }
