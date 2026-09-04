@@ -227,3 +227,101 @@ func (s *UserService) Set2FA(ctx context.Context, password, hint, email string) 
 	return nil
 }
 
+// SearchByPhone looks up user contact details by telephone number.
+func (s *UserService) SearchByPhone(ctx context.Context, phone string) (*types.User, error) {
+	payload := map[string]interface{}{
+		"phone": phone,
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpContactInfoByPhone, payload)
+	if err != nil {
+		return nil, fmt.Errorf("search by phone failed: %w", err)
+	}
+
+	user := &types.User{Phone: phone}
+	if uData, ok := res["contact"].(map[string]interface{}); ok {
+		if id, ok := uData["id"].(int64); ok {
+			user.ID = id
+		} else if idF, ok := uData["id"].(float64); ok {
+			user.ID = int64(idF)
+		}
+		if fn, ok := uData["firstName"].(string); ok {
+			user.FirstName = fn
+		}
+		if ln, ok := uData["lastName"].(string); ok {
+			user.LastName = ln
+		}
+	}
+	return user, nil
+}
+
+// AddContact adds a user to contact list.
+func (s *UserService) AddContact(ctx context.Context, contactID int64) error {
+	payload := map[string]interface{}{
+		"contactId": contactID,
+		"action":    "ADD",
+	}
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, payload)
+	if err != nil {
+		return fmt.Errorf("add contact failed: %w", err)
+	}
+	return nil
+}
+
+// RemoveContact removes a user from contact list.
+func (s *UserService) RemoveContact(ctx context.Context, contactID int64) error {
+	payload := map[string]interface{}{
+		"contactId": contactID,
+		"action":    "REMOVE",
+	}
+	_, err := s.invoker.Invoke(ctx, protocol.OpContactUpdate, payload)
+	if err != nil {
+		return fmt.Errorf("remove contact failed: %w", err)
+	}
+	return nil
+}
+
+// GetChatID calculates the private dialog chat ID between two users using XOR.
+func (s *UserService) GetChatID(firstUserID, secondUserID int64) int64 {
+	return firstUserID ^ secondUserID
+}
+
+// CloseAllSessions closes all other active sessions except current.
+func (s *UserService) CloseAllSessions(ctx context.Context) error {
+	_, err := s.invoker.Invoke(ctx, protocol.OpSessionsClose, map[string]interface{}{})
+	if err != nil {
+		return fmt.Errorf("close all sessions failed: %w", err)
+	}
+	return nil
+}
+
+// ChangeProfile updates user display name, bio, and avatar.
+func (s *UserService) ChangeProfile(ctx context.Context, firstName, lastName, bio, photoToken string) error {
+	payload := map[string]interface{}{
+		"firstName": firstName,
+	}
+	if lastName != "" {
+		payload["lastName"] = lastName
+	}
+	if bio != "" {
+		payload["description"] = bio
+	}
+	if photoToken != "" {
+		payload["photoToken"] = photoToken
+	}
+
+	_, err := s.invoker.Invoke(ctx, protocol.OpProfile, payload)
+	if err != nil {
+		return fmt.Errorf("change profile failed: %w", err)
+	}
+	return nil
+}
+
+// Logout terminates the current session.
+func (s *UserService) Logout(ctx context.Context) error {
+	_, err := s.invoker.Invoke(ctx, protocol.OpLogout, map[string]interface{}{})
+	if err != nil {
+		return fmt.Errorf("logout failed: %w", err)
+	}
+	return nil
+}
+

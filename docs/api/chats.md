@@ -337,3 +337,70 @@ if err != nil {
 }
 fmt.Printf("Новая ссылка на чат: %s\n", newLink)
 ```
+
+---
+
+### 12. `JoinGroup` и `JoinChannel`
+
+Специализированные псевдонимы для `JoinChat` с аналогичным поведением и автоматической нормализацией ссылок.
+
+```go
+func (s *ChatService) JoinGroup(ctx context.Context, link string) (*types.Chat, error)
+func (s *ChatService) JoinChannel(ctx context.Context, link string) (*types.Chat, error)
+```
+
+---
+
+### 13. `ResolveGroupByLink`
+
+Позволяет проверить валидность ссылки-приглашения и получить информацию о группе/канале (название, аватар) **без фактического вступления** в чат.
+
+```go
+func (s *ChatService) ResolveGroupByLink(ctx context.Context, link string) (*types.Chat, error)
+```
+
+* **Опкод протокола**: `OpChatCheckLink` (56).
+
+---
+
+### 14. `GetChats` и `GetChat`
+
+Получает полную информацию о чатах по их идентификаторам.
+
+```go
+func (s *ChatService) GetChats(ctx context.Context, chatIDs []int64) ([]types.Chat, error)
+func (s *ChatService) GetChat(ctx context.Context, chatID int64) (*types.Chat, error)
+```
+
+* **Опкод протокола**: `OpChatInfo` (48).
+
+---
+
+### 15. `ChangeGroupProfile`
+
+Обновляет название, описание и аватар группы.
+
+```go
+func (s *ChatService) ChangeGroupProfile(ctx context.Context, chatID int64, name, description, photoToken string) error
+```
+
+* **Опкод протокола**: `OpChatUpdate` (55).
+
+---
+
+### 16. Заявки на вступление (`JoinRequests`)
+
+Управление очередью участников в закрытых каналах и чатах:
+
+```go
+// Получить список ожидающих заявок
+func (s *ChatService) GetJoinRequests(ctx context.Context, chatID int64, count int) ([]types.Member, error)
+
+// Одобрить заявки
+func (s *ChatService) ConfirmJoinRequests(ctx context.Context, chatID int64, userIDs []int64) error
+
+// Отклонить заявки
+func (s *ChatService) DeclineJoinRequests(ctx context.Context, chatID int64, userIDs []int64) error
+```
+
+* **Опкод протокола**: `OpChatMembers` (59).

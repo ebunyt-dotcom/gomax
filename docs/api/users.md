@@ -246,3 +246,76 @@ func (s *UserService) Set2FA(
   * `hint` (`string`): подсказка для пароля.
   * `email` (`string`): e-mail для сброса.
 * **Возвращаемое значение**: `error`.
+
+---
+
+### 9. `SearchByPhone`
+
+Поиск пользователя по номеру мобильного телефона.
+
+```go
+func (s *UserService) SearchByPhone(ctx context.Context, phone string) (*types.User, error)
+```
+
+* **Опкод протокола**: `OpContactInfoByPhone` (46).
+
+---
+
+### 10. `AddContact` и `RemoveContact`
+
+Добавление пользователя в записную книжку (контакты) и удаление из нее.
+
+```go
+func (s *UserService) AddContact(ctx context.Context, contactID int64) error
+func (s *UserService) RemoveContact(ctx context.Context, contactID int64) error
+```
+
+* **Опкод протокола**: `OpContactUpdate` (34).
+
+---
+
+### 11. `GetChatID`
+
+Вычисляет ID приватного диалога между двумя пользователями по бинарной операции исключающего ИЛИ (`XOR`).
+
+```go
+func (s *UserService) GetChatID(firstUserID, secondUserID int64) int64
+```
+
+Формула: `firstUserID ^ secondUserID`.
+
+---
+
+### 12. `CloseAllSessions`
+
+Сбрасывает все активные подключения к аккаунту кроме текущего.
+
+```go
+func (s *UserService) CloseAllSessions(ctx context.Context) error
+```
+
+* **Опкод протокола**: `OpSessionsClose` (97).
+
+---
+
+### 13. `ChangeProfile`
+
+Обновляет имя, фамилию, статус (bio) и аватар текущего профиля.
+
+```go
+func (s *UserService) ChangeProfile(ctx context.Context, firstName, lastName, bio, photoToken string) error
+```
+
+* **Опкод протокола**: `OpProfile` (16).
+
+---
+
+### 14. `Logout`
+
+Завершает сессию и отзывает текущий токен авторизации на сервере.
+
+```go
+func (s *UserService) Logout(ctx context.Context) error
+```
+
+* **Опкод протокола**: `OpLogout` (20).

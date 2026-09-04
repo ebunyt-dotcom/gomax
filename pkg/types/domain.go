@@ -118,3 +118,9 @@ type Message struct {
 	IsPinned     bool           `json:"is_pinned,omitempty" msgpack:"is_pinned,omitempty"`
 	IsDeleted    bool           `json:"is_deleted,omitempty" msgpack:"is_deleted,omitempty"`
 }
+
+// RegistrationConfig holds profile names for automatic registration of new phone numbers.
+type RegistrationConfig struct {
+	FirstName string `json:"first_name" msgpack:"first_name"`
+	LastName  string `json:"last_name,omitempty" msgpack:"last_name,omitempty"`
+}

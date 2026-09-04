@@ -367,3 +367,54 @@ func (s *MessageService) VotePoll(
 // Голосование за первый и третий вариант ответа
 err := client.Messages.VotePoll(ctx, chatID, msgID, pollID, []int{0, 2})
 ```
+
+---
+
+### 13. `GetMessages` и `GetMessage`
+
+Запрашивает конкретные сообщения по их уникальным идентификаторам.
+
+```go
+func (s *MessageService) GetMessages(ctx context.Context, chatID int64, messageIDs []int64) ([]types.Message, error)
+func (s *MessageService) GetMessage(ctx context.Context, chatID int64, messageID int64) (*types.Message, error)
+```
+
+* **Опкод протокола**: `OpMsgGet` (71).
+* **Параметры**:
+  * `chatID`: идентификатор чата.
+  * `messageIDs`: список идентификаторов сообщений.
+* **Возвращаемое значение**: список или указатель на найденное сообщение.
+
+#### Пример вызова:
+```go
+msg, err := client.Messages.GetMessage(ctx, chatID, 1042)
+if err == nil {
+    fmt.Printf("Сообщение найдено: %s\n", msg.Text)
+}
+```
+
+---
+
+### 14. `GetReactions`
+
+Получает подробную статистику реакций на указанные сообщения.
+
+```go
+func (s *MessageService) GetReactions(ctx context.Context, chatID int64, messageIDs []int64) (map[int64][]types.ReactionInfo, error)
+```
+
+* **Опкод протокола**: `OpMsgGetReactions` (182).
+* **Возвращаемое значение**: словарь, сопоставляющий ID сообщения со срезом реакций и количеством голосов.
+
+---
+
+### 15. `GetVideoByID` и `GetFileByID`
+
+Запрашивают метаданные и прямые ссылки на скачивание/проигрывание видео и файлов.
+
+```go
+func (s *MessageService) GetVideoByID(ctx context.Context, chatID int64, messageID int64, videoID int64) (map[string]interface{}, error)
+func (s *MessageService) GetFileByID(ctx context.Context, chatID int64, messageID int64, fileID int64) (map[string]interface{}, error)
+```
+
+* **Опкоды**: `OpVideoPlay` (85) и `OpFileDownload` (83).
