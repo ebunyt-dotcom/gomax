@@ -24,8 +24,6 @@ type Config struct {
 
 	Store          session.Store     // Кастомная реализация хранилища сессий (SQLite, File, Memory)
 	AuthFlow       auth.SmsAuthFlow  // Кастомная логика SMS/2FA авторизации
-	Registration   *RegistrationConfig // Данные профиля для авторегистрации нового номера
-	AutoRegister   bool              // Автоматически регистрировать новые аккаунты (по умолчанию true)
 }
 ```
 
@@ -50,8 +48,6 @@ cfg := gomax.DefaultConfig()
 | `PersistSession` | `true` | Сессия сохраняется автоматически |
 | `Reconnect` | `true` | Включено авто-переподключение |
 | `ReconnectDelay` | `3 * time.Second` | Задержка между реконнектами |
-| `AutoRegister` | `true` | Авторегистрация новых номеров |
-| `Registration` | `nil` | При `nil` имена генерируются автоматически |
 
 ---
 
