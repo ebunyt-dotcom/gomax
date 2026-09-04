@@ -39,10 +39,8 @@ type Config struct {
 	Reconnect      bool
 	ReconnectDelay time.Duration
 
-	Store          session.Store
-	AuthFlow       auth.SmsAuthFlow
-	Registration   *types.RegistrationConfig // Имя и фамилия для авторегистрации нового аккаунта
-	AutoRegister   bool                      // Автоматически регистрировать новые аккаунты
+	Store    session.Store
+	AuthFlow auth.SmsAuthFlow
 }
 
 // DefaultConfig returns default client configuration matching PyMax.
@@ -57,7 +55,6 @@ func DefaultConfig() *Config {
 		PersistSession: true,
 		Reconnect:      true,
 		ReconnectDelay: 3 * time.Second,
-		AutoRegister:   true,
 	}
 }
 
@@ -280,24 +277,6 @@ func (c *Client) runSession(ctx context.Context) error {
 			return errors.New("phone number required for initial authentication")
 		}
 		smsFlow := auth.NewSmsAuthFlow(nil, nil)
-		if c.cfg.AuthFlow.CodeProvider != nil {
-			smsFlow.CodeProvider = c.cfg.AuthFlow.CodeProvider
-		}
-		if c.cfg.AuthFlow.PasswordProvider != nil {
-			smsFlow.PasswordProvider = c.cfg.AuthFlow.PasswordProvider
-		}
-		if c.cfg.AuthFlow.RegistrationProvider != nil {
-			smsFlow.RegistrationProvider = c.cfg.AuthFlow.RegistrationProvider
-		}
-		if c.cfg.AuthFlow.RegistrationConfig != nil {
-			smsFlow.RegistrationConfig = c.cfg.AuthFlow.RegistrationConfig
-		}
-		if c.cfg.Registration != nil {
-			smsFlow.RegistrationConfig = c.cfg.Registration
-		}
-		if c.cfg.AutoRegister || c.cfg.AuthFlow.AutoRegister {
-			smsFlow.AutoRegister = true
-		}
 		authRes, err := smsFlow.Authenticate(ctx, c, c.cfg.Phone)
 		if err != nil {
 			_ = connManager.Close()

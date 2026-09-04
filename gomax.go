@@ -35,9 +35,6 @@ type (
 
 	// Attachment represents a media attachment.
 	Attachment = types.Attachment
-
-	// RegistrationConfig holds registration profile names.
-	RegistrationConfig = types.RegistrationConfig
 )
 
 // NewClient creates a new TCP Max client matching PyMax Client.

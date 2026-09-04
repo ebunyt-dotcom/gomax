@@ -3,16 +3,13 @@ package auth
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
 	"time"
 
 	"gomax/pkg/api"
 	"gomax/pkg/protocol"
-	"gomax/pkg/types"
 )
 
 // CodeProvider retrieves SMS verification code.
@@ -23,32 +20,6 @@ type CodeProvider interface {
 // PasswordProvider retrieves 2FA password.
 type PasswordProvider interface {
 	GetPassword(ctx context.Context) (string, error)
-}
-
-// RegistrationProvider supplies user names for registering new accounts.
-type RegistrationProvider interface {
-	GetRegistrationNames(ctx context.Context, phone string) (string, string, error)
-}
-
-// RandomRegistrationProvider generates realistic user names for automatic registration.
-type RandomRegistrationProvider struct{}
-
-func (p *RandomRegistrationProvider) GetRegistrationNames(ctx context.Context, phone string) (string, string, error) {
-	firstNames := []string{"Александр", "Дмитрий", "Максим", "Сергей", "Андрей", "Алексей", "Артем", "Илья", "Кирилл", "Михаил", "Никита", "Матвей", "Роман", "Егор", "Иван", "Денис", "Евгений", "Даниил", "Владислав", "Павел"}
-	lastNames := []string{"Иванов", "Смирнов", "Кузнецов", "Попов", "Васильев", "Петров", "Соколов", "Михайлов", "Новиков", "Федоров", "Морозов", "Волков", "Алексеев", "Лебедев", "Семенов", "Егоров", "Павлов", "Козлов"}
-	fn := firstNames[rand.Intn(len(firstNames))]
-	ln := lastNames[rand.Intn(len(lastNames))]
-	return fn, ln, nil
-}
-
-// StaticRegistrationProvider returns predefined names.
-type StaticRegistrationProvider struct {
-	FirstName string
-	LastName  string
-}
-
-func (p *StaticRegistrationProvider) GetRegistrationNames(ctx context.Context, phone string) (string, string, error) {
-	return p.FirstName, p.LastName, nil
 }
 
 // QrHandler handles presentation of QR code.
@@ -96,16 +67,13 @@ type AuthResult struct {
 	UserID int64
 }
 
-// SmsAuthFlow handles phone and SMS based authentication with auto-registration.
+// SmsAuthFlow handles phone and SMS based authentication.
 type SmsAuthFlow struct {
-	CodeProvider         CodeProvider
-	PasswordProvider     PasswordProvider
-	RegistrationConfig   *types.RegistrationConfig
-	RegistrationProvider RegistrationProvider
-	AutoRegister         bool
+	CodeProvider     CodeProvider
+	PasswordProvider PasswordProvider
 }
 
-// NewSmsAuthFlow creates a new SMS authentication flow with auto-registration enabled by default.
+// NewSmsAuthFlow creates a new SMS authentication flow.
 func NewSmsAuthFlow(codeProvider CodeProvider, pwdProvider PasswordProvider) *SmsAuthFlow {
 	if codeProvider == nil {
 		codeProvider = &ConsoleCodeProvider{}
@@ -114,14 +82,12 @@ func NewSmsAuthFlow(codeProvider CodeProvider, pwdProvider PasswordProvider) *Sm
 		pwdProvider = &ConsolePasswordProvider{}
 	}
 	return &SmsAuthFlow{
-		CodeProvider:         codeProvider,
-		PasswordProvider:     pwdProvider,
-		RegistrationProvider: &RandomRegistrationProvider{},
-		AutoRegister:         true,
+		CodeProvider:     codeProvider,
+		PasswordProvider: pwdProvider,
 	}
 }
 
-// Authenticate executes the SMS login handshake, automatically registering new accounts if needed.
+// Authenticate executes the SMS login handshake.
 func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, phone string) (*AuthResult, error) {
 	// Request code
 	reqPayload := map[string]interface{}{
@@ -164,68 +130,11 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 	}
 
 	token, _ := res["token"].(string)
-	tokenType, _ := res["tokenType"].(string)
-	registerToken, _ := res["registerToken"].(string)
-	if regTok, ok := res["register_token"].(string); ok && regTok != "" {
-		registerToken = regTok
-	}
-	if registerToken == "" && tokenType == "REGISTER" {
-		registerToken = token
-		token = ""
-	}
-
 	var uid int64
 	if u, ok := res["userId"].(int64); ok {
 		uid = u
 	} else if uF, ok := res["userId"].(float64); ok {
 		uid = int64(uF)
-	}
-
-	// Auto-registration flow: new account created on the fly
-	if token == "" && registerToken != "" {
-		var firstName, lastName string
-		if f.RegistrationConfig != nil && f.RegistrationConfig.FirstName != "" {
-			firstName = f.RegistrationConfig.FirstName
-			lastName = f.RegistrationConfig.LastName
-		} else if f.RegistrationProvider != nil {
-			fn, ln, err := f.RegistrationProvider.GetRegistrationNames(ctx, phone)
-			if err != nil {
-				return nil, fmt.Errorf("registration names provider failed: %w", err)
-			}
-			firstName, lastName = fn, ln
-		} else if f.AutoRegister {
-			p := &RandomRegistrationProvider{}
-			firstName, lastName, _ = p.GetRegistrationNames(ctx, phone)
-		} else {
-			return nil, errors.New("registration token received: RegistrationConfig or AutoRegister is required to register a new account")
-		}
-
-		confirmPayload := map[string]interface{}{
-			"firstName": firstName,
-			"token":     registerToken,
-			"tokenType": "REGISTER",
-		}
-		if lastName != "" {
-			confirmPayload["lastName"] = lastName
-		}
-
-		confirmRes, err := invoker.Invoke(ctx, protocol.OpAuthConfirm, confirmPayload)
-		if err != nil {
-			return nil, fmt.Errorf("confirm registration failed: %w", err)
-		}
-
-		if tok, ok := confirmRes["token"].(string); ok && tok != "" {
-			token = tok
-		}
-		if u, ok := confirmRes["userToken"].(int64); ok {
-			uid = u
-		} else if uF, ok := confirmRes["userToken"].(float64); ok {
-			uid = int64(uF)
-		} else if u, ok := confirmRes["userId"].(int64); ok {
-			uid = u
-		} else if uF, ok := confirmRes["userId"].(float64); ok {
-			uid = int64(uF)
-		}
 	}
 
 	return &AuthResult{Token: token, UserID: uid}, nil
