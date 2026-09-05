@@ -2,6 +2,8 @@
 
 `AddReaction` добавляет emoji к одному сообщению. Для нескольких сообщений используйте цикл с контролем ошибок.
 
+## Пример
+
 ```go
 for _, messageID := range messageIDs {
     if err := client.Messages.AddReaction(ctx, chatID, messageID, "👍"); err != nil {
@@ -10,4 +12,7 @@ for _, messageID := range messageIDs {
 }
 ```
 
-Для удаления используйте `RemoveReaction`. Не отправляйте запросы без ограничений: сервер может применить rate limit.
+## Ограничения и рекомендации
+
+Для удаления используйте `RemoveReaction`. Не отправляйте запросы без
+ограничений: сервер может применить rate limit.

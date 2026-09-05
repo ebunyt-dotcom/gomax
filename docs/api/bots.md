@@ -1,6 +1,9 @@
 # Bot Web App
 
-Сервис: `client.Bots`.
+Сервис: `client.Bots`. Примеры ниже — фрагменты: `client`, `ctx`, `botID` и
+`chatID` уже созданы.
+
+## Получение данных
 
 ### `GetInitData`
 

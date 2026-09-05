@@ -2,11 +2,13 @@
 
 ## Программа сразу завершается
 
-Проверьте, что ошибка client.Start не игнорируется:
+Проверьте, что ошибка `client.Start` не игнорируется:
 
-    if err := client.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
+```go
+if err := client.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+```
 
 Если используется context.WithTimeout, не задавайте слишком короткий timeout для долгоживущего клиента. Для фонового клиента используйте context.WithCancel и вызывайте cancel при остановке.
 
@@ -14,15 +16,19 @@
 
 Для GoMax виртуальное окружение Python не нужно. Установите Go-зависимость в Go-проект:
 
-    go get github.com/ebunyt-dotcom/gomax
-    go mod tidy
+```powershell
+go get github.com/ebunyt-dotcom/gomax
+go mod tidy
+```
 
 ## go run сообщает missing go.sum entry
 
 Запустите команды в каталоге проекта, где находится go.mod:
 
-    go get github.com/ebunyt-dotcom/gomax
-    go mod tidy
+```powershell
+go get github.com/ebunyt-dotcom/gomax
+go mod tidy
+```
 
 Если библиотека подключена локально, проверьте replace в go.mod и наличие всех зависимостей.
 
@@ -30,11 +36,15 @@
 
 Импорт должен быть таким:
 
-    import "github.com/ebunyt-dotcom/gomax"
+```go
+import "github.com/ebunyt-dotcom/gomax"
+```
 
-После изменения go.mod повторите:
+После изменения `go.mod` повторите:
 
-    go mod tidy
+```powershell
+go mod tidy
+```
 
 ## Клиент подключается, но авторизация не продолжается
 
@@ -56,10 +66,12 @@ OnMessage вызывается только после успешного Start 
 
 Для диагностики временно добавьте OnRaw:
 
-    client.OnRaw(func(ctx context.Context, event *types.RawEvent) error {
-        log.Printf("raw event: type=%s opcode=%d", event.Type, event.Opcode)
-        return nil
-    })
+```go
+client.OnRaw(func(ctx context.Context, event *types.RawEvent) error {
+    log.Printf("raw event: type=%s opcode=%d", event.Type, event.Opcode)
+    return nil
+})
+```
 
 ## Сессия сломалась или нужно войти заново
 
@@ -85,4 +97,3 @@ OnMessage вызывается только после успешного Start 
 - SMS-коды и пароль 2FA.
 
 Для полного списка методов см. [API reference](api/reference.md).
-

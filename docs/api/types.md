@@ -35,11 +35,13 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 
 Пример:
 
-    msg, err := client.Messages.GetMessage(ctx, chatID, messageID)
-    if err != nil {
-        return err
-    }
-    fmt.Println(msg.Text, msg.SenderID)
+```go
+msg, err := client.Messages.GetMessage(ctx, chatID, messageID)
+if err != nil {
+    return err
+}
+fmt.Println(msg.Text, msg.SenderID)
+```
 
 ## Attachment
 
@@ -59,18 +61,20 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 
 Для нового медиафайла обычно используется такой порядок:
 
-    data, err := os.ReadFile("photo.jpg")
-    if err != nil {
-        return err
-    }
+```go
+data, err := os.ReadFile("photo.jpg")
+if err != nil {
+    return err
+}
 
-    attachment, err := client.Uploads.UploadPhoto(ctx, data, "photo.jpg")
-    if err != nil {
-        return err
-    }
+attachment, err := client.Uploads.UploadPhoto(ctx, data, "photo.jpg")
+if err != nil {
+    return err
+}
 
-    _, err = client.Messages.SendMessage(ctx, chatID, "Фото", 0,
-        []gomax.Attachment{*attachment})
+_, err = client.Messages.SendMessage(ctx, chatID, "Фото", 0,
+    []gomax.Attachment{*attachment})
+```
 
 Константы типов доступны и как `gomax.AttachmentPhoto`, и как `types.AttachmentPhoto`.
 
@@ -93,9 +97,11 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 
 Типы чатов:
 
-    gomax.ChatTypeDialog
-    gomax.ChatTypeChat
-    gomax.ChatTypeChannel
+```go
+gomax.ChatTypeDialog
+gomax.ChatTypeChat
+gomax.ChatTypeChannel
+```
 
 ## User и Member
 
@@ -137,20 +143,22 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 
 Типичные обработчики:
 
-    client.OnMessage(func(ctx context.Context, msg *gomax.Message) error {
-        fmt.Println(msg.ChatID, msg.Text)
-        return nil
-    })
+```go
+client.OnMessage(func(ctx context.Context, msg *gomax.Message) error {
+    fmt.Println(msg.ChatID, msg.Text)
+    return nil
+})
 
-    client.OnReaction(func(ctx context.Context, ev *gomax.ReactionEvent) error {
-        fmt.Println(ev.MessageID, ev.Reaction, ev.Removed)
-        return nil
-    })
+client.OnReaction(func(ctx context.Context, ev *gomax.ReactionEvent) error {
+    fmt.Println(ev.MessageID, ev.Reaction, ev.Removed)
+    return nil
+})
 
-    client.OnPresence(func(ctx context.Context, ev *gomax.PresenceEvent) error {
-        fmt.Println(ev.UserID, ev.Online)
-        return nil
-    })
+client.OnPresence(func(ctx context.Context, ev *gomax.PresenceEvent) error {
+    fmt.Println(ev.UserID, ev.Online)
+    return nil
+})
+```
 
 Доступные структуры событий:
 
@@ -161,6 +169,32 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 - `TypingEvent`: `ChatID`, `UserID`;
 - `RawEvent`: `Type`, `Opcode`, `Payload`;
 - `VideoUploadSignal`, `FileUploadSignal`, `VoiceUploadSignal`: ID готового медиа.
+
+Тип события можно сравнивать с константами `EventType`:
+
+```go
+types.EventMessageNew
+types.EventMessageUpdate
+types.EventMessageDelete
+types.EventMessageRead
+types.EventTyping
+types.EventPresence
+types.EventReaction
+types.EventChatUpdate
+types.EventUserUpdate
+types.EventVideoReady
+types.EventFileReady
+types.EventVoiceReady
+types.EventRaw
+```
+
+Сигналы готовности вложений содержат один идентификатор:
+
+| Тип | Поле |
+|---|---|
+| `VideoUploadSignal` | `VideoID int64` |
+| `FileUploadSignal` | `FileID int64` |
+| `VoiceUploadSignal` | `AudioID int64` |
 
 ## Папки и Bot Web App
 

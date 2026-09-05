@@ -2,6 +2,8 @@
 
 Для групп и каналов используйте `client.Chats.InviteUsersToGroup` или `InviteUsersToChannel`.
 
+## Пример
+
 ```go
 ids := []int64{1001, 1002, 1003}
 err := client.Chats.InviteUsersToGroup(ctx, chatID, ids, true)
@@ -9,7 +11,7 @@ err := client.Chats.InviteUsersToGroup(ctx, chatID, ids, true)
 
 Параметр `showHistory` определяет, увидят ли новые участники старую историю. Операция требует прав администратора.
 
-## Рекомендации
+## Ограничения и рекомендации
 
 - обрабатывайте `error` после каждого запроса;
 - делайте небольшие порции;

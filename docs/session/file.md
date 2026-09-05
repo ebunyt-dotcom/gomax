@@ -53,6 +53,26 @@ info := &session.SessionInfo{
 err := store.SaveSession(info)
 ```
 
+## Данные сессии
+
+`SessionInfo` содержит данные авторизации и состояние синхронизации:
+
+| Поле | Тип | Назначение |
+|---|---|---|
+| `Token` | `string` | токен авторизованной сессии |
+| `DeviceID` | `string` | идентификатор устройства |
+| `Phone` | `string` | номер аккаунта |
+| `MTInstanceID` | `string` | идентификатор экземпляра клиента |
+| `UserAgent` | `*UserAgentPayload` | параметры устройства |
+| `Sync` | `SyncState` | маркеры синхронизации |
+
+`SyncState` содержит `ChatsSync`, `ContactsSync`, `DraftsSync`,
+`PresenceSync` и `ConfigHash`. Эти значения библиотека обновляет сама; вручную
+менять их обычно не нужно.
+
+`UserAgentPayload` содержит `DeviceType`, `AppVersion`, `BuildNumber`,
+`OSVersion` и `DeviceName`.
+
 ## Безопасность
 
 Добавьте каталог сессий в `.gitignore`:

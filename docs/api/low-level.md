@@ -4,6 +4,10 @@
 Обычному приложению достаточно `gomax.NewClient` и `gomax.NewWebClient`.
 Каждая строка ниже показывает назначение и минимальный вызов.
 
+Эта страница описывает расширение библиотеки, а не обычный сценарий бота. Для
+прикладного кода сначала используйте `gomax.NewClient` или
+`gomax.NewWebClient`.
+
 ## `pkg/api`
 
 | Функция/метод | Назначение | Пример |
@@ -18,6 +22,12 @@
 | `Invoker.Invoke` | Выполнить RPC по opcode. | `result, err := invoker.Invoke(ctx, op, payload)` |
 
 ## `pkg/dispatch`
+
+Типы обработчиков задают сигнатуры callback-функций: `MessageHandler`,
+`MessageEditHandler`, `MessageDeleteHandler`, `MessageReadHandler`,
+`UserUpdateHandler`, `ReactionHandler`, `ChatUpdateHandler`,
+`PresenceHandler`, `TypingHandler`, `DisconnectHandler`, `StartHandler`,
+`EventHandler` и `MessagePredicate`.
 
 ### Регистрация обработчиков
 
@@ -55,6 +65,20 @@
 | `DispatchEvent` | Передать raw event. | `router.DispatchEvent(ctx, event)` |
 
 ## `pkg/protocol`
+
+Основные интерфейсы:
+
+```go
+type Protocol interface {
+    Version() uint8
+    Encode(*OutboundFrame) ([]byte, error)
+    Decode([]byte) (*InboundFrame, error)
+}
+
+type Decompressor interface {
+    Decompress(src []byte, maxOutput int) ([]byte, error)
+}
+```
 
 ### Кодирование и кадры
 
@@ -110,6 +134,31 @@
 
 ## `pkg/connection`
 
+Основные интерфейсы и настройки:
+
+```go
+type Reader interface {
+    ReadFrame() ([]byte, error)
+}
+
+type Connection interface {
+    Start(context.Context) error
+    Close() error
+    WaitClosed() error
+    SendRequest(context.Context, protocol.Opcode, any) (*protocol.InboundFrame, error)
+    SendEvent(context.Context, protocol.Opcode, any) error
+    Events() <-chan *protocol.InboundFrame
+    Handshake(context.Context, any) (*protocol.InboundFrame, error)
+    IsOpen() bool
+}
+```
+
+`connection.Config` содержит `Interactive`, `PingInterval`, `PingTimeout`,
+`RequestTimeout`, `EventsChanSize` и `ProtocolVersion`. Пакет также экспортирует
+ошибки `ErrConnectionNotOpen`, `ErrConnectionAlreadyOpen`, `ErrPingTimeout`,
+`ErrRequestCancelled`, `ErrConnectionClosed`, `ErrFrameTooLarge` и
+`ErrIncompleteFrame`.
+
 | Функция/метод | Назначение | Пример |
 |---|---|---|
 | `DefaultConfig` | Получить параметры connection manager. | `cfg := connection.DefaultConfig()` |
@@ -142,6 +191,24 @@
 | `WSReader.ReadFrame` | Прочитать WS frame. | `data, err := reader.ReadFrame()` |
 
 ## `pkg/transport`
+
+`transport.Transport` — общий интерфейс TCP и WebSocket транспорта:
+
+```go
+type Transport interface {
+    io.Closer
+    Connect(context.Context) error
+    Send([]byte) error
+    Recv(int) ([]byte, error)
+    Connected() bool
+}
+```
+
+`TCPOptions` настраивает `Host`, `Port`, `UseSSL`, `ProxyURL`, `TLSConfig`,
+`ConnectTimeout` и `CloseTimeout`. `WSOptions` настраивает `URL`, `Origin`,
+`ProxyURL`, `TLSConfig`, таймауты и `MaxMessageSize`. Экспортируемые ошибки:
+`ErrNotConnected`, `ErrAlreadyConnected`, `ErrClosed`, `ErrInvalidProxy` и
+`ErrMessageTooLarge`.
 
 | Функция/метод | Назначение | Пример |
 |---|---|---|

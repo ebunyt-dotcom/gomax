@@ -5,8 +5,7 @@ GoMax — Go-клиент Max с двумя способами подключе�
 - `NewClient` — TCP + SMS, подходит для серверных задач;
 - `NewWebClient` — WebSocket + QR, подходит для входа через приложение Max.
 
-GoMax — Go-библиотека для работы с Max через TCP и WebSocket. API пакетов
-доступен в [Go Reference на pkg.go.dev](https://pkg.go.dev/github.com/ebunyt-dotcom/gomax).
+API пакетов доступен в [Go Reference на pkg.go.dev](https://pkg.go.dev/github.com/ebunyt-dotcom/gomax).
 
 ## С чего начать
 

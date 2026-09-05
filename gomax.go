@@ -30,6 +30,10 @@ type (
 
 	// Config configures client endpoints, auth, and persistence.
 	Config = client.Config
+	// RegistrationConfig contains the profile fields used to finish a new account registration.
+	RegistrationConfig = client.RegistrationConfig
+	// NonRecoverableError marks an error after which reconnecting is not useful.
+	NonRecoverableError = client.NonRecoverableError
 
 	// Message represents a text/media message.
 	Message = types.Message
