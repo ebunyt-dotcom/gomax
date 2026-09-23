@@ -159,9 +159,13 @@ func (m *ConnectionManager) Close() error {
 
 	m.pending.CancelAll()
 	err := m.transport.Close()
+	readerErr := m.closeReader()
 
 	m.wg.Wait()
 	m.markClosed(nil)
+	if err == nil {
+		err = readerErr
+	}
 	return err
 }
 
@@ -177,8 +181,22 @@ func (m *ConnectionManager) Fail(err error) {
 
 	m.pending.CancelAll()
 	_ = m.transport.Close()
+	_ = m.closeReader()
 
 	m.markClosed(err)
+}
+
+// closeReader releases readers that own blocking resources independently of
+// the transport. The built-in readers are unblocked by Transport.Close, while
+// custom readers may implement either conventional io.Closer or Close().
+func (m *ConnectionManager) closeReader() error {
+	if closer, ok := m.reader.(io.Closer); ok {
+		return closer.Close()
+	}
+	if closer, ok := m.reader.(interface{ Close() }); ok {
+		closer.Close()
+	}
+	return nil
 }
 
 // WaitClosed blocks until the connection is closed or fails.
@@ -352,6 +370,7 @@ func (m *ConnectionManager) handleInbound(frame *protocol.InboundFrame) {
 	// If frame is a response or error matching a pending request, resolve it
 	if frame.Cmd == protocol.CmdResponse || frame.Cmd == protocol.CmdError {
 		m.pending.Resolve(frame.Seq, frame)
+		return
 	}
 
 	// Deliver to event channel
@@ -362,7 +381,7 @@ func (m *ConnectionManager) handleInbound(frame *protocol.InboundFrame) {
 	}
 
 	// Fire callback if registered
-	if m.onEvent != nil {
+	if m.onEvent != nil && frame.IsEvent() {
 		go m.onEvent(frame)
 	}
 }

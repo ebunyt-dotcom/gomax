@@ -1,11 +1,120 @@
 package fingerprint
 
 import (
+	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"sort"
+	"sync"
 )
+
+const DefaultRemoteCatalogURL = "https://hashes.pymax.org/versions.json"
+const RecommendedAppVersion = "26.25.0"
+
+//go:embed apk_fingerprints.json
+var embeddedCatalog []byte
+
+type VersionCatalog struct {
+	mu       sync.RWMutex
+	versions map[string]*ApkBuildFingerprint
+}
+
+func NewVersionCatalog() *VersionCatalog {
+	catalog := &VersionCatalog{versions: make(map[string]*ApkBuildFingerprint)}
+	var raw map[string]struct {
+		Certificate string            `json:"certificate_meta_sha256"`
+		Dex         string            `json:"dex_meta_sha256"`
+		SO          map[string]string `json:"so_meta_sha256"`
+		Build       int               `json:"build_number"`
+	}
+	if json.Unmarshal(embeddedCatalog, &raw) == nil {
+		for version, item := range raw {
+			catalog.versions[version] = &ApkBuildFingerprint{VersionName: version, VersionCode: item.Build, CertificateMetaSha256: item.Certificate, DexMetaSha256: item.Dex, SoMetaSha256: item.SO}
+		}
+	}
+	if len(catalog.versions) == 0 {
+		fallback := hardcodedDefaultFingerprint()
+		catalog.versions[fallback.VersionName] = fallback
+	}
+	return catalog
+}
+
+// Versions returns all known built-in and remotely loaded versions in order.
+func (c *VersionCatalog) Versions() []string {
+	c.mu.RLock()
+	versions := make([]string, 0, len(c.versions))
+	for version := range c.versions {
+		versions = append(versions, version)
+	}
+	c.mu.RUnlock()
+	sort.Strings(versions)
+	return versions
+}
+
+func (c *VersionCatalog) Add(version string, value *ApkBuildFingerprint, override bool) error {
+	if version == "" || value == nil {
+		return errors.New("fingerprint: version and value are required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.versions[version]; exists && !override {
+		return fmt.Errorf("fingerprint: version %s already exists", version)
+	}
+	copy := *value
+	c.versions[version] = &copy
+	return nil
+}
+
+func (c *VersionCatalog) Resolve(version string) (*ApkBuildFingerprint, error) {
+	c.mu.RLock()
+	value, ok := c.versions[version]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("fingerprint: version %s not found", version)
+	}
+	copy := *value
+	return &copy, nil
+}
+
+func (c *VersionCatalog) LoadRemote(ctx context.Context, client *http.Client, catalogURL string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if catalogURL == "" {
+		catalogURL = DefaultRemoteCatalogURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("fingerprint: catalog HTTP status %s", resp.Status)
+	}
+	var raw map[string]struct {
+		Certificate string            `json:"certificate_meta_sha256"`
+		Dex         string            `json:"dex_meta_sha256"`
+		SO          map[string]string `json:"so_meta_sha256"`
+		Build       int               `json:"build_number"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return err
+	}
+	for version, item := range raw {
+		_ = c.Add(version, &ApkBuildFingerprint{VersionName: version, VersionCode: item.Build, CertificateMetaSha256: item.Certificate, DexMetaSha256: item.Dex, SoMetaSha256: item.SO}, true)
+	}
+	return nil
+}
 
 // ApkBuildFingerprint holds the cryptographic hash metadata of the client build.
 type ApkBuildFingerprint struct {
@@ -26,8 +135,22 @@ func NewFingerprintGenerator(data *ApkBuildFingerprint) *FingerprintGenerator {
 	return &FingerprintGenerator{data: data}
 }
 
+func (g *FingerprintGenerator) VersionName() string {
+	if g == nil || g.data == nil {
+		return ""
+	}
+	return g.data.VersionName
+}
+
 // DefaultFingerprint returns a default Android mobile build fingerprint matching PyMax 26.25.0 (build 6790).
 func DefaultFingerprint() *ApkBuildFingerprint {
+	if resolved, err := NewVersionCatalog().Resolve(RecommendedAppVersion); err == nil {
+		return resolved
+	}
+	return hardcodedDefaultFingerprint()
+}
+
+func hardcodedDefaultFingerprint() *ApkBuildFingerprint {
 	return &ApkBuildFingerprint{
 		VersionCode:           6790,
 		VersionName:           "26.25.0",
@@ -53,23 +176,7 @@ func (g *FingerprintGenerator) GenerateFingerprint(deviceID string, callsSeed in
 
 	soHashHex, ok := g.data.SoMetaSha256[arch]
 	if !ok {
-		// Deterministic fallback to arm64-v8a or first known arch
-		if defaultSo, hasArm := g.data.SoMetaSha256["arm64-v8a"]; hasArm {
-			soHashHex = defaultSo
-		} else {
-			for _, k := range []string{"armeabi-v7a", "x86_64", "x86"} {
-				if v, exists := g.data.SoMetaSha256[k]; exists {
-					soHashHex = v
-					break
-				}
-			}
-			if soHashHex == "" {
-				for _, v := range g.data.SoMetaSha256 {
-					soHashHex = v
-					break
-				}
-			}
-		}
+		return nil, fmt.Errorf("fingerprint: unsupported architecture %q", arch)
 	}
 	if soHashHex == "" {
 		return nil, errors.New("no SO meta sha256 found for architecture")

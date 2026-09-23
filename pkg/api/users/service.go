@@ -3,6 +3,7 @@ package users
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/ebunyt-dotcom/gomax/pkg/api"
 	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
@@ -12,82 +13,96 @@ import (
 // UserService handles user profiles, contacts, and searches.
 type UserService struct {
 	invoker api.Invoker
+	mu      sync.RWMutex
+	cache   map[int64]types.User
 }
 
 // NewUserService creates a new UserService instance.
 func NewUserService(invoker api.Invoker) *UserService {
-	return &UserService{invoker: invoker}
+	return &UserService{invoker: invoker, cache: make(map[int64]types.User)}
 }
 
 // GetUser retrieves detailed user profile information by ID.
 func (s *UserService) GetUser(ctx context.Context, userID int64) (*types.User, error) {
-	payload := map[string]interface{}{
-		"userId": userID,
+	if cached, _ := s.GetCachedUser(ctx, userID); cached != nil {
+		return cached, nil
 	}
-
-	res, err := s.invoker.Invoke(ctx, protocol.OpContactInfo, payload)
+	users, err := s.FetchUsers(ctx, []int64{userID})
 	if err != nil {
 		return nil, fmt.Errorf("get user failed: %w", err)
 	}
-
-	user := &types.User{ID: userID}
-	if uData, ok := res["user"].(map[string]interface{}); ok {
-		if fn, ok := uData["firstName"].(string); ok {
-			user.FirstName = fn
-		}
-		if ln, ok := uData["lastName"].(string); ok {
-			user.LastName = ln
-		}
-		if phone, ok := uData["phone"].(string); ok {
-			user.Phone = phone
-		}
+	if len(users) == 0 {
+		return nil, nil
 	}
-	return user, nil
+	return &users[0], nil
 }
 
-// GetCachedUser is kept as an explicit Go API hook. GoMax currently leaves
-// caching to the caller, so it performs one regular lookup.
+// GetCachedUser returns a cached profile without performing network I/O.
 func (s *UserService) GetCachedUser(ctx context.Context, userID int64) (*types.User, error) {
-	return s.GetUser(ctx, userID)
+	_ = ctx
+	s.mu.RLock()
+	user, ok := s.cache[userID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, nil
+	}
+	copy := user
+	return &copy, nil
 }
 
 // FetchUsers is the uncached batch lookup counterpart to GetUsers.
 func (s *UserService) FetchUsers(ctx context.Context, userIDs []int64) ([]types.User, error) {
-	return s.GetUsers(ctx, userIDs)
+	if len(userIDs) == 0 {
+		return []types.User{}, nil
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpContactInfo, map[string]interface{}{
+		"contactIds": userIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fetch users failed: %w", err)
+	}
+	users := s.usersFromResponse(res)
+	s.cacheUsers(users)
+	return users, nil
 }
 
 // GetUsers retrieves multiple user profiles in batch.
 func (s *UserService) GetUsers(ctx context.Context, userIDs []int64) ([]types.User, error) {
-	payload := map[string]interface{}{
-		"userIds": userIDs,
+	result := make([]types.User, 0, len(userIDs))
+	missing := make([]int64, 0)
+	s.mu.RLock()
+	for _, id := range userIDs {
+		if user, ok := s.cache[id]; ok {
+			result = append(result, user)
+		} else {
+			missing = append(missing, id)
+		}
 	}
-
-	res, err := s.invoker.Invoke(ctx, protocol.OpContactInfo, payload)
-	if err != nil {
-		return nil, fmt.Errorf("get users failed: %w", err)
-	}
-
-	var users []types.User
-	if uList, ok := res["users"].([]interface{}); ok {
-		for _, item := range uList {
-			if uData, ok := item.(map[string]interface{}); ok {
-				var u types.User
-				if id, ok := uData["id"].(int64); ok {
-					u.ID = id
-				} else if idF, ok := uData["id"].(float64); ok {
-					u.ID = int64(idF)
-				}
-				if fn, ok := uData["firstName"].(string); ok {
-					u.FirstName = fn
-				}
-				if ln, ok := uData["lastName"].(string); ok {
-					u.LastName = ln
-				}
-				users = append(users, u)
+	s.mu.RUnlock()
+	if len(missing) > 0 {
+		fetched, err := s.FetchUsers(ctx, missing)
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[int64]types.User, len(fetched))
+		for _, user := range fetched {
+			byID[user.ID] = user
+		}
+		result = result[:0]
+		for _, id := range userIDs {
+			if user, ok := byID[id]; ok {
+				result = append(result, user)
+				continue
+			}
+			s.mu.RLock()
+			user, ok := s.cache[id]
+			s.mu.RUnlock()
+			if ok {
+				result = append(result, user)
 			}
 		}
 	}
-	return users, nil
+	return result, nil
 }
 
 // SearchUsers searches contacts and users globally by name or query.
@@ -105,19 +120,13 @@ func (s *UserService) SearchUsers(ctx context.Context, query string) ([]types.Us
 	if uList, ok := res["users"].([]interface{}); ok {
 		for _, item := range uList {
 			if uData, ok := item.(map[string]interface{}); ok {
-				var u types.User
-				if id, ok := uData["id"].(int64); ok {
-					u.ID = id
-				} else if idF, ok := uData["id"].(float64); ok {
-					u.ID = int64(idF)
-				}
-				if fn, ok := uData["firstName"].(string); ok {
-					u.FirstName = fn
-				}
-				users = append(users, u)
+				user := types.ParseUserPayload(uData)
+				user.Bind(s)
+				users = append(users, user)
 			}
 		}
 	}
+	s.cacheUsers(users)
 	return users, nil
 }
 
@@ -133,23 +142,8 @@ func (s *UserService) GetContacts(ctx context.Context) ([]types.User, error) {
 		return nil, fmt.Errorf("get contacts failed: %w", err)
 	}
 
-	var contacts []types.User
-	if cList, ok := res["contacts"].([]interface{}); ok {
-		for _, item := range cList {
-			if cData, ok := item.(map[string]interface{}); ok {
-				var u types.User
-				if id, ok := cData["id"].(int64); ok {
-					u.ID = id
-				} else if idF, ok := cData["id"].(float64); ok {
-					u.ID = int64(idF)
-				}
-				if fn, ok := cData["firstName"].(string); ok {
-					u.FirstName = fn
-				}
-				contacts = append(contacts, u)
-			}
-		}
-	}
+	contacts := s.usersFromResponse(res)
+	s.cacheUsers(contacts)
 	return contacts, nil
 }
 
@@ -160,32 +154,14 @@ func (s *UserService) GetSelf(ctx context.Context) (*types.User, error) {
 		return nil, fmt.Errorf("get self profile failed: %w", err)
 	}
 
-	user := &types.User{}
-	if uData, ok := res["profile"].(map[string]interface{}); ok {
-		if id, ok := uData["id"].(int64); ok {
-			user.ID = id
-		} else if idF, ok := uData["id"].(float64); ok {
-			user.ID = int64(idF)
-		}
-		if fn, ok := uData["firstName"].(string); ok {
-			user.FirstName = fn
-		}
-		if phone, ok := uData["phone"].(string); ok {
-			user.Phone = phone
-		}
-	}
-	return user, nil
+	user := types.ParseUserPayload(res)
+	user.Bind(s)
+	s.cacheUsers([]types.User{user})
+	return &user, nil
 }
 
-// SessionItem represents an active device session.
-type SessionItem struct {
-	ID         int64  `json:"id"`
-	Device     string `json:"device"`
-	Location   string `json:"location"`
-	Client     string `json:"client"`
-	IP         string `json:"ip"`
-	LastActive int64  `json:"last_active"`
-}
+// SessionItem is retained for source compatibility.
+type SessionItem = types.Session
 
 // GetActiveSessions retrieves all active device sessions for this account.
 func (s *UserService) GetActiveSessions(ctx context.Context) ([]SessionItem, error) {
@@ -198,18 +174,11 @@ func (s *UserService) GetActiveSessions(ctx context.Context) ([]SessionItem, err
 	if rawList, ok := res["sessions"].([]interface{}); ok {
 		for _, item := range rawList {
 			if sData, ok := item.(map[string]interface{}); ok {
-				var si SessionItem
-				if id, ok := sData["id"].(int64); ok {
-					si.ID = id
-				} else if idF, ok := sData["id"].(float64); ok {
-					si.ID = int64(idF)
-				}
-				if dev, ok := sData["device"].(string); ok {
-					si.Device = dev
-				}
-				if ip, ok := sData["ip"].(string); ok {
-					si.IP = ip
-				}
+				si := SessionItem{ID: sData["id"], Device: stringOrEmpty(sData["device"]), DeviceID: stringOrEmpty(sData["deviceId"]), UserAgent: stringOrEmpty(sData["userAgent"]), AppVersion: stringOrEmpty(sData["appVersion"]), DeviceName: stringOrEmpty(sData["deviceName"]), DeviceType: stringOrEmpty(sData["deviceType"]), Platform: stringOrEmpty(sData["platform"]), Location: stringOrEmpty(sData["location"]), Client: stringOrEmpty(sData["client"]), IP: stringOrEmpty(sData["ip"]), Options: sData["options"]}
+				si.Current, _ = sData["current"].(bool)
+				si.Created, _ = types.Int64Value(sData["created"])
+				si.Updated, _ = types.Int64Value(sData["updated"])
+				si.LastActivity, _ = types.Int64Value(sData["lastActivity"])
 				sessions = append(sessions, si)
 			}
 		}
@@ -236,16 +205,56 @@ func (s *UserService) CloseSession(ctx context.Context, sessionID int64) error {
 
 // Set2FA configures or updates the 2FA password on the account.
 func (s *UserService) Set2FA(ctx context.Context, password, hint, email string) error {
-	payload := map[string]interface{}{
-		"password": password,
-		"hint":     hint,
-		"email":    email,
+	if email != "" {
+		return fmt.Errorf("set 2fa: email requires Set2FAWithEmailProvider")
 	}
-	_, err := s.invoker.Invoke(ctx, protocol.OpAuthSet2Fa, payload)
+	return s.set2FA(ctx, password, hint, "", nil)
+}
+
+func (s *UserService) Set2FAWithEmailProvider(ctx context.Context, password, hint, email string, codeProvider func(context.Context) (string, error)) error {
+	return s.set2FA(ctx, password, hint, email, codeProvider)
+}
+
+func (s *UserService) set2FA(ctx context.Context, password, hint, email string, codeProvider func(context.Context) (string, error)) error {
+	res, err := s.invoker.Invoke(ctx, protocol.OpAuthCreateTrack, map[string]interface{}{"type": 0})
 	if err != nil {
-		return fmt.Errorf("set 2fa failed: %w", err)
+		return fmt.Errorf("create 2fa track: %w", err)
 	}
-	return nil
+	trackID, _ := res["trackId"].(string)
+	if trackID == "" {
+		return fmt.Errorf("create 2fa track: missing trackId")
+	}
+	if _, err := s.invoker.Invoke(ctx, protocol.OpAuthValidatePassword, map[string]interface{}{"trackId": trackID, "password": password}); err != nil {
+		return err
+	}
+	capabilities := []int{0}
+	if hint != "" {
+		if _, err := s.invoker.Invoke(ctx, protocol.OpAuthValidateHint, map[string]interface{}{"trackId": trackID, "hint": hint}); err != nil {
+			return err
+		}
+		capabilities = append(capabilities, 3)
+	}
+	if email != "" {
+		if _, err := s.invoker.Invoke(ctx, protocol.OpAuthVerifyEmail, map[string]interface{}{"trackId": trackID, "email": email}); err != nil {
+			return err
+		}
+		if codeProvider == nil {
+			return fmt.Errorf("set 2fa: email code provider is required")
+		}
+		code, err := codeProvider(ctx)
+		if err != nil {
+			return err
+		}
+		if code == "" {
+			return fmt.Errorf("set 2fa: email verification code is required")
+		}
+		if _, err := s.invoker.Invoke(ctx, protocol.OpAuthCheckEmail, map[string]interface{}{"trackId": trackID, "verifyCode": code}); err != nil {
+			return err
+		}
+		capabilities = append(capabilities, 4)
+	}
+	_, err = s.invoker.Invoke(ctx, protocol.OpAuthSet2Fa, map[string]interface{}{"trackId": trackID, "password": password, "hint": hint, "expectedCapabilities": capabilities})
+	return err
 }
 
 // AddContact adds a user to the contact list by user ID and optional name info.
@@ -277,16 +286,11 @@ func (s *UserService) AddContactByID(ctx context.Context, contactID int64) (*typ
 	}
 	user := &types.User{ID: contactID}
 	if data, ok := res["contact"].(map[string]interface{}); ok {
-		if v, ok := data["id"].(int64); ok {
-			user.ID = v
-		}
-		if v, ok := data["firstName"].(string); ok {
-			user.FirstName = v
-		}
-		if v, ok := data["lastName"].(string); ok {
-			user.LastName = v
-		}
+		parsed := types.ParseUserPayload(data)
+		user = &parsed
 	}
+	user.Bind(s)
+	s.cacheUsers([]types.User{*user})
 	return user, nil
 }
 
@@ -298,20 +302,39 @@ func (s *UserService) RemoveContact(ctx context.Context, contactID int64) error 
 	if err != nil {
 		return fmt.Errorf("remove contact failed: %w", err)
 	}
+	s.mu.Lock()
+	delete(s.cache, contactID)
+	s.mu.Unlock()
 	return nil
 }
 
-// ImportContacts imports phone/name pairs into the account contacts.
-func (s *UserService) ImportContacts(ctx context.Context, contacts map[string]string) ([]types.User, error) {
-	contactList := make(map[string]interface{}, len(contacts))
-	for phone, firstName := range contacts {
-		contactList[phone] = map[string]interface{}{"firstName": firstName}
+// ImportContacts imports account contacts. contacts may be
+// []types.ContactInfo (the PyMax shape) or map[string]string for compatibility
+// with earlier GoMax releases.
+func (s *UserService) ImportContacts(ctx context.Context, contacts any) ([]types.User, error) {
+	contactList := make(map[string]interface{})
+	switch values := contacts.(type) {
+	case []types.ContactInfo:
+		for _, contact := range values {
+			if contact.Phone == "" || contact.FirstName == "" {
+				return nil, fmt.Errorf("import contacts failed: phone and first name are required")
+			}
+			contactList[contact.Phone] = map[string]interface{}{"firstName": contact.FirstName}
+		}
+	case map[string]string:
+		for phone, firstName := range values {
+			contactList[phone] = map[string]interface{}{"firstName": firstName}
+		}
+	default:
+		return nil, fmt.Errorf("import contacts failed: expected []types.ContactInfo or map[string]string")
 	}
 	res, err := s.invoker.Invoke(ctx, protocol.OpSync, map[string]interface{}{"contactList": contactList})
 	if err != nil {
 		return nil, fmt.Errorf("import contacts failed: %w", err)
 	}
-	return usersFromResponse(res), nil
+	users := s.usersFromResponse(res)
+	s.cacheUsers(users)
+	return users, nil
 }
 
 // GetChatID returns the deterministic dialog ID used by Max for two users.
@@ -345,47 +368,46 @@ func (s *UserService) GetUserByPhone(ctx context.Context, phone string) (*types.
 		return nil, fmt.Errorf("get user by phone failed: %w", err)
 	}
 
-	user := &types.User{Phone: phone}
-	src := res
-	if uData, ok := res["user"].(map[string]interface{}); ok {
-		src = uData
-	} else if uData, ok := res["contact"].(map[string]interface{}); ok {
-		src = uData
+	parsed := types.ParseUserPayload(res)
+	user := &parsed
+	if user.Phone == "" {
+		user.Phone = phone
 	}
-	if id, ok := src["id"].(int64); ok {
-		user.ID = id
-	} else if idF, ok := src["id"].(float64); ok {
-		user.ID = int64(idF)
-	}
-	if fn, ok := src["firstName"].(string); ok {
-		user.FirstName = fn
-	}
-	if ln, ok := src["lastName"].(string); ok {
-		user.LastName = ln
-	}
+	user.Bind(s)
+	s.cacheUsers([]types.User{*user})
 	return user, nil
 }
 
-func usersFromResponse(res map[string]interface{}) []types.User {
+func (s *UserService) usersFromResponse(res map[string]interface{}) []types.User {
 	var out []types.User
 	list, _ := res["contacts"].([]interface{})
+	if list == nil {
+		list, _ = res["users"].([]interface{})
+	}
 	for _, item := range list {
 		m, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		u := types.User{Phone: stringOrEmpty(m["phone"])}
-		if v, ok := m["id"].(int64); ok {
-			u.ID = v
-		} else if v, ok := m["id"].(float64); ok {
-			u.ID = int64(v)
-		}
-		if v, ok := m["firstName"].(string); ok {
-			u.FirstName = v
-		}
+		u := types.ParseUserPayload(m)
+		u.Bind(s)
 		out = append(out, u)
 	}
 	return out
 }
+
+func (s *UserService) cacheUsers(users []types.User) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, user := range users {
+		if user.ID != 0 {
+			user.Bind(s)
+			s.cache[user.ID] = user
+		}
+	}
+}
+
+// SeedCache stores users received during LOGIN/LOGIN2 synchronization.
+func (s *UserService) SeedCache(users []types.User) { s.cacheUsers(users) }
 
 func stringOrEmpty(value interface{}) string { v, _ := value.(string); return v }

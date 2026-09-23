@@ -35,7 +35,7 @@ cfg.Store = session.NewFileStore("./cache", "account.json")
 |---|---|---|
 | `SaveSession` | Сохранить token, телефон, device ID и sync-состояние. | `err := store.SaveSession(info)` |
 | `LoadSession` | Загрузить основную сессию. | `info, err := store.LoadSession()` |
-| `UpdateToken` | Обновить token для телефона. | `err := store.UpdateToken(phone, token)` |
+| `UpdateToken` | Атомарно заменить старый token новым. | `err := store.UpdateToken(oldToken, newToken)` |
 | `LoadSessionByDeviceID` | Найти сессию по устройству. | `info, err := store.LoadSessionByDeviceID(deviceID)` |
 | `LoadSessionByPhone` | Найти сессию по номеру. | `info, err := store.LoadSessionByPhone(phone)` |
 | `DeleteSession` | Удалить одну сессию по token. | `err := store.DeleteSession(token)` |

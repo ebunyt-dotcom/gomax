@@ -14,7 +14,18 @@ import (
 // SelfService handles the current account's profile, settings, and folder management.
 // It mirrors pymax.api.self.service.SelfService.
 type SelfService struct {
-	invoker api.Invoker
+	invoker             api.Invoker
+	userActions         types.UserActions
+	onTokenChanged      func(oldToken, newToken string) error
+	onConfigHashChanged func(hash string) error
+}
+
+// SetUserActions binds convenience methods on returned profile values.
+func (s *SelfService) SetUserActions(actions types.UserActions) { s.userActions = actions }
+
+func (s *SelfService) SetSessionHooks(tokenHook func(string, string) error, hashHook func(string) error) {
+	s.onTokenChanged = tokenHook
+	s.onConfigHashChanged = hashHook
 }
 
 type interactiveController interface {
@@ -33,40 +44,23 @@ func (s *SelfService) GetSelf(ctx context.Context) (*types.User, error) {
 		return nil, fmt.Errorf("get self failed: %w", err)
 	}
 
-	user := &types.User{}
-	uData := res
-	if profile, ok := res["profile"].(map[string]interface{}); ok {
-		uData = profile
-		if contact, ok := profile["contact"].(map[string]interface{}); ok {
-			uData = contact
-		}
-	}
-
-	if id, ok := uData["id"].(int64); ok {
-		user.ID = id
-	} else if idF, ok := uData["id"].(float64); ok {
-		user.ID = int64(idF)
-	}
-	if fn, ok := uData["firstName"].(string); ok {
-		user.FirstName = fn
-	}
-	if ln, ok := uData["lastName"].(string); ok {
-		user.LastName = ln
-	}
-	if phone, ok := uData["phone"].(string); ok {
-		user.Phone = phone
-	}
-	if bio, ok := uData["description"].(string); ok {
-		user.Bio = bio
-	}
-	return user, nil
+	user := types.ParseUserPayload(res)
+	user.Bind(s.userActions)
+	return &user, nil
 }
 
 // ChangeProfile updates the current account's first name, last name, description, and/or photo.
 // Set photoToken to "" to leave the avatar unchanged.
 func (s *SelfService) ChangeProfile(ctx context.Context, firstName, lastName, description, photoToken string) error {
+	_, err := s.ChangeProfileResult(ctx, firstName, lastName, description, photoToken)
+	return err
+}
+
+// ChangeProfileResult updates the profile and returns the contact from Max's response.
+func (s *SelfService) ChangeProfileResult(ctx context.Context, firstName, lastName, description, photoToken string) (*types.User, error) {
 	payload := map[string]interface{}{
-		"firstName": firstName,
+		"firstName":  firstName,
+		"avatarType": "USER_AVATAR",
 	}
 	if lastName != "" {
 		payload["lastName"] = lastName
@@ -78,11 +72,13 @@ func (s *SelfService) ChangeProfile(ctx context.Context, firstName, lastName, de
 		payload["photoToken"] = photoToken
 	}
 
-	_, err := s.invoker.Invoke(ctx, protocol.OpProfile, payload)
+	res, err := s.invoker.Invoke(ctx, protocol.OpProfile, payload)
 	if err != nil {
-		return fmt.Errorf("change profile failed: %w", err)
+		return nil, fmt.Errorf("change profile failed: %w", err)
 	}
-	return nil
+	user := types.ParseUserPayload(res)
+	user.Bind(s.userActions)
+	return &user, nil
 }
 
 // SetPresence changes the interactive flag used by the owning client.
@@ -115,49 +111,53 @@ func (s *SelfService) Logout(ctx context.Context) error {
 
 // CloseAllSessions terminates all other active device sessions, keeping the current one.
 func (s *SelfService) CloseAllSessions(ctx context.Context) error {
-	_, err := s.invoker.Invoke(ctx, protocol.OpSessionsClose, map[string]interface{}{})
+	res, err := s.invoker.Invoke(ctx, protocol.OpSessionsClose, map[string]interface{}{})
 	if err != nil {
 		return fmt.Errorf("close all sessions failed: %w", err)
+	}
+	newToken, _ := res["token"].(string)
+	if newToken == "" {
+		return fmt.Errorf("close all sessions failed: response did not contain a replacement token")
+	}
+	if s.onTokenChanged != nil {
+		if err := s.onTokenChanged("", newToken); err != nil {
+			return fmt.Errorf("persist replacement token: %w", err)
+		}
 	}
 	return nil
 }
 
 // GetFolders returns all configured chat folders (filters).
 func (s *SelfService) GetFolders(ctx context.Context) (*types.FolderList, error) {
+	return s.GetFoldersFromSync(ctx, 0)
+}
+
+func (s *SelfService) GetFoldersFromSync(ctx context.Context, folderSync int64) (*types.FolderList, error) {
 	res, err := s.invoker.Invoke(ctx, protocol.OpFoldersGet, map[string]interface{}{
-		"folderSync": 0,
+		"folderSync": folderSync,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get folders failed: %w", err)
 	}
 
 	fl := &types.FolderList{}
-	if syncVal, ok := res["sync"].(float64); ok {
-		fl.Sync = int64(syncVal)
-	} else if syncVal, ok := res["sync"].(int64); ok {
-		fl.Sync = syncVal
+	fl.Sync, _ = types.Int64Value(res["folderSync"])
+	if fl.Sync == 0 {
+		fl.Sync, _ = types.Int64Value(res["sync"])
 	}
+	if order, ok := res["foldersOrder"].([]interface{}); ok {
+		for _, item := range order {
+			if id, ok := item.(string); ok {
+				fl.FoldersOrder = append(fl.FoldersOrder, id)
+			}
+		}
+	}
+	fl.AllFilterExcludeFolders, _ = res["allFilterExcludeFolders"].([]interface{})
 
 	if rawFolders, ok := res["folders"].([]interface{}); ok {
 		for _, item := range rawFolders {
 			if fData, ok := item.(map[string]interface{}); ok {
-				folder := types.Folder{}
-				if id, ok := fData["id"].(string); ok {
-					folder.ID = id
-				}
-				if title, ok := fData["title"].(string); ok {
-					folder.Title = title
-				}
-				if includeRaw, ok := fData["include"].([]interface{}); ok {
-					for _, v := range includeRaw {
-						if chatID, ok := v.(float64); ok {
-							folder.Include = append(folder.Include, int64(chatID))
-						} else if chatID, ok := v.(int64); ok {
-							folder.Include = append(folder.Include, chatID)
-						}
-					}
-				}
-				fl.Folders = append(fl.Folders, folder)
+				fl.Folders = append(fl.Folders, parseFolder(fData))
 			}
 		}
 	}
@@ -166,11 +166,23 @@ func (s *SelfService) GetFolders(ctx context.Context) (*types.FolderList, error)
 
 // CreateFolder creates a new chat folder with the given title and included chat IDs.
 func (s *SelfService) CreateFolder(ctx context.Context, title string, chatInclude []int64) (*types.Folder, error) {
+	update, err := s.CreateFolderUpdate(ctx, title, chatInclude, nil)
+	if err != nil || update == nil {
+		return nil, err
+	}
+	return update.Folder, nil
+}
+
+// CreateFolderUpdate exposes the complete FolderUpdate response and custom filters.
+func (s *SelfService) CreateFolderUpdate(ctx context.Context, title string, chatInclude []int64, filters []interface{}) (*types.FolderUpdate, error) {
+	if filters == nil {
+		filters = []interface{}{}
+	}
 	payload := map[string]interface{}{
 		"id":      newFolderID(),
 		"title":   title,
 		"include": chatInclude,
-		"filters": []interface{}{},
+		"filters": filters,
 	}
 
 	res, err := s.invoker.Invoke(ctx, protocol.OpFoldersUpdate, payload)
@@ -178,17 +190,29 @@ func (s *SelfService) CreateFolder(ctx context.Context, title string, chatInclud
 		return nil, fmt.Errorf("create folder failed: %w", err)
 	}
 
-	folder := &types.Folder{Title: title}
-	if fData, ok := res["folder"].(map[string]interface{}); ok {
-		if id, ok := fData["id"].(string); ok {
-			folder.ID = id
-		}
-	}
-	return folder, nil
+	return parseFolderUpdate(res), nil
 }
 
 // UpdateFolderWithOptions is the full PyMax folder update variant.
 func (s *SelfService) UpdateFolderWithOptions(ctx context.Context, folderID, title string, chatInclude []int64, filters, options []interface{}) (*types.Folder, error) {
+	update, err := s.UpdateFolderResult(ctx, folderID, title, chatInclude, filters, options)
+	if err != nil || update == nil {
+		return nil, err
+	}
+	return update.Folder, nil
+}
+
+// UpdateFolderResult returns the complete folder order and sync marker.
+func (s *SelfService) UpdateFolderResult(ctx context.Context, folderID, title string, chatInclude []int64, filters, options []interface{}) (*types.FolderUpdate, error) {
+	if chatInclude == nil {
+		chatInclude = []int64{}
+	}
+	if filters == nil {
+		filters = []interface{}{}
+	}
+	if options == nil {
+		options = []interface{}{}
+	}
 	payload := map[string]interface{}{
 		"id": folderID, "title": title, "include": chatInclude,
 		"filters": filters, "options": options,
@@ -197,67 +221,54 @@ func (s *SelfService) UpdateFolderWithOptions(ctx context.Context, folderID, tit
 	if err != nil {
 		return nil, fmt.Errorf("update folder failed: %w", err)
 	}
-	folder := &types.Folder{ID: folderID, Title: title}
-	if raw, ok := res["folder"].(map[string]interface{}); ok {
-		if id, ok := raw["id"].(string); ok {
-			folder.ID = id
-		}
-		if t, ok := raw["title"].(string); ok {
-			folder.Title = t
-		}
-	}
-	return folder, nil
+	return parseFolderUpdate(res), nil
 }
 
 // UpdateFolder updates an existing folder's title and included chats.
 func (s *SelfService) UpdateFolder(ctx context.Context, folderID, title string, chatInclude []int64) (*types.Folder, error) {
-	payload := map[string]interface{}{
-		"id":      folderID,
-		"title":   title,
-		"include": chatInclude,
-		"filters": []interface{}{},
-	}
-
-	res, err := s.invoker.Invoke(ctx, protocol.OpFoldersUpdate, payload)
-	if err != nil {
-		return nil, fmt.Errorf("update folder failed: %w", err)
-	}
-
-	folder := &types.Folder{ID: folderID, Title: title}
-	if fData, ok := res["folder"].(map[string]interface{}); ok {
-		if id, ok := fData["id"].(string); ok {
-			folder.ID = id
-		}
-		if t, ok := fData["title"].(string); ok {
-			folder.Title = t
-		}
-	}
-	return folder, nil
+	return s.UpdateFolderWithOptions(ctx, folderID, title, chatInclude, []interface{}{}, []interface{}{})
 }
 
 // DeleteFolder removes a chat folder by its ID.
 func (s *SelfService) DeleteFolder(ctx context.Context, folderID string) error {
+	_, err := s.DeleteFolderResult(ctx, folderID)
+	return err
+}
+
+// DeleteFolderResult returns the updated folder order and sync marker.
+func (s *SelfService) DeleteFolderResult(ctx context.Context, folderID string) (*types.FolderUpdate, error) {
 	payload := map[string]interface{}{
 		"folderIds": []string{folderID},
 	}
 
-	_, err := s.invoker.Invoke(ctx, protocol.OpFoldersDelete, payload)
+	res, err := s.invoker.Invoke(ctx, protocol.OpFoldersDelete, payload)
 	if err != nil {
-		return fmt.Errorf("delete folder failed: %w", err)
+		return nil, fmt.Errorf("delete folder failed: %w", err)
 	}
-	return nil
+	return parseFolderUpdate(res), nil
 }
 
 // ChangeProfileSettings updates privacy settings. The map keys must be the
 // protocol names (for example SEARCH_BY_PHONE or HIDDEN).
 func (s *SelfService) ChangeProfileSettings(ctx context.Context, settings map[string]interface{}) error {
-	_, err := s.invoker.Invoke(ctx, protocol.OpConfig, map[string]interface{}{
+	res, err := s.invoker.Invoke(ctx, protocol.OpConfig, map[string]interface{}{
 		"settings": map[string]interface{}{"user": settings},
 	})
 	if err != nil {
 		return fmt.Errorf("change profile settings failed: %w", err)
 	}
+	hash, _ := res["hash"].(string)
+	if hash != "" && s.onConfigHashChanged != nil {
+		if err := s.onConfigHashChanged(hash); err != nil {
+			return fmt.Errorf("persist config hash: %w", err)
+		}
+	}
 	return nil
+}
+
+// ChangePrivacySettings is the typed form of ChangeProfileSettings.
+func (s *SelfService) ChangePrivacySettings(ctx context.Context, settings types.PrivacySettingsUpdate) error {
+	return s.ChangeProfileSettings(ctx, settings.Payload())
 }
 
 func newFolderID() string {
@@ -272,4 +283,37 @@ func newFolderID() string {
 		hex.EncodeToString(b[6:8]) + "-" +
 		hex.EncodeToString(b[8:10]) + "-" +
 		hex.EncodeToString(b[10:16])
+}
+
+func parseFolder(raw map[string]interface{}) types.Folder {
+	folder := types.Folder{ID: types.StringValue(raw["id"]), Title: types.StringValue(raw["title"])}
+	folder.SourceID, _ = types.Int64Value(raw["sourceId"])
+	folder.UpdateTime, _ = types.Int64Value(raw["updateTime"])
+	folder.Options, _ = raw["options"].([]interface{})
+	folder.Filters, _ = raw["filters"].([]interface{})
+	if include, ok := raw["include"].([]interface{}); ok {
+		for _, value := range include {
+			if chatID, ok := types.Int64Value(value); ok {
+				folder.Include = append(folder.Include, chatID)
+			}
+		}
+	}
+	return folder
+}
+
+func parseFolderUpdate(raw map[string]interface{}) *types.FolderUpdate {
+	update := &types.FolderUpdate{}
+	update.FolderSync, _ = types.Int64Value(raw["folderSync"])
+	if order, ok := raw["foldersOrder"].([]interface{}); ok {
+		for _, value := range order {
+			if id, ok := value.(string); ok {
+				update.FoldersOrder = append(update.FoldersOrder, id)
+			}
+		}
+	}
+	if folder, ok := raw["folder"].(map[string]interface{}); ok {
+		parsed := parseFolder(folder)
+		update.Folder = &parsed
+	}
+	return update
 }

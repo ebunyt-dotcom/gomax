@@ -222,7 +222,7 @@ type Transport interface {
 | `DefaultWSOptions` | Получить WS defaults. | `opts := transport.DefaultWSOptions(url)` |
 | `NewWebSocketTransport` | Создать WebSocket transport. | `t := transport.NewWebSocketTransport(opts)` |
 | `WebSocketTransport.Connect` | Подключиться. | `err := t.Connect(ctx)` |
-| `WebSocketTransport.Send` | Отправить binary message. | `err := t.Send(data)` |
+| `WebSocketTransport.Send` | Отправить message (`TextFrames` выбирает text/binary). | `err := t.Send(data)` |
 | `WebSocketTransport.Recv` | Прочитать message. | `data, err := t.Recv(size)` |
 | `WebSocketTransport.Connected` | Проверить подключение. | `ok := t.Connected()` |
 | `WebSocketTransport.Close` | Закрыть transport. | `err := t.Close()` |

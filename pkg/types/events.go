@@ -21,9 +21,22 @@ const (
 
 // MessageReadEvent describes a server read marker notification.
 type MessageReadEvent struct {
-	ChatID    int64 `json:"chat_id" msgpack:"chat_id"`
-	MessageID int64 `json:"message_id" msgpack:"message_id"`
-	Mark      int64 `json:"mark" msgpack:"mark"`
+	SetAsUnread bool  `json:"setAsUnread" msgpack:"setAsUnread"`
+	ChatID      int64 `json:"chatId" msgpack:"chatId"`
+	UserID      int64 `json:"userId" msgpack:"userId"`
+	Mark        int64 `json:"mark" msgpack:"mark"`
+	// MessageID is retained for compatibility with older GoMax handlers.
+	MessageID int64 `json:"messageId,omitempty" msgpack:"messageId,omitempty"`
+}
+
+// MessageDeleteEvent normalizes both mobile bulk-delete and WebSocket
+// single-message delete notifications.
+type MessageDeleteEvent struct {
+	MessageIDs []int64  `json:"messageIds" msgpack:"messageIds"`
+	ChatID     int64    `json:"chatId" msgpack:"chatId"`
+	Chat       *Chat    `json:"chat,omitempty" msgpack:"chat,omitempty"`
+	Message    *Message `json:"message,omitempty" msgpack:"message,omitempty"`
+	TTL        bool     `json:"ttl,omitempty" msgpack:"ttl,omitempty"`
 }
 
 // UserUpdateEvent describes a changed contact/profile payload.

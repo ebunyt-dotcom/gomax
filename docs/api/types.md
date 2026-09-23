@@ -29,6 +29,15 @@ ID имеют тип `int64`. Не подставляйте имя чата вм
 | ReplyToMsgID | int64 | исходное сообщение для ответа |
 | Attachments | []Attachment | фото, видео, файл и т.д. |
 | Reactions | []ReactionInfo | реакции |
+| ReactionInfo | *ReactionInfo | сводные counters и реакция текущего пользователя |
+| Status | MessageStatus | EDITED/REMOVED, если статус прислан |
+| PrevMessageID | any | предыдущий ID; сервер может прислать число или строку |
+| TTL | *bool | признак временного сообщения; nil, если поле отсутствовало |
+| Unread | *int | количество непрочитанных; nil, если поле отсутствовало |
+| Mark | *int64 | read marker; nil, если поле отсутствовало |
+| Options | any | integer flags или объект настроек |
+| Elements | []Element | форматирование текста с UTF-16 offsets |
+| Link | *MessageLink | typed reply/forward source |
 | IsOutgoing | bool | сообщение отправлено текущим аккаунтом |
 | IsPinned | bool | сообщение закреплено |
 | IsDeleted | bool | сообщение удалено |

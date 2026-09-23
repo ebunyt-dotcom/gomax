@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -22,11 +23,19 @@ type SyncState struct {
 
 // UserAgentPayload stores client device headers.
 type UserAgentPayload struct {
-	DeviceType  string `json:"device_type"`
-	AppVersion  string `json:"app_version"`
-	BuildNumber int    `json:"build_number"`
-	OSVersion   string `json:"os_version"`
-	DeviceName  string `json:"device_name"`
+	DeviceType      string `json:"device_type"`
+	AppVersion      string `json:"app_version"`
+	BuildNumber     int    `json:"build_number"`
+	OSVersion       string `json:"os_version"`
+	Timezone        string `json:"timezone"`
+	Screen          string `json:"screen"`
+	PushDeviceType  string `json:"push_device_type,omitempty"`
+	Arch            string `json:"arch,omitempty"`
+	Locale          string `json:"locale"`
+	DeviceName      string `json:"device_name"`
+	DeviceLocale    string `json:"device_locale"`
+	Release         int    `json:"release,omitempty"`
+	HeaderUserAgent string `json:"header_user_agent,omitempty"`
 }
 
 // SessionInfo stores persisted credentials and session state.
@@ -43,7 +52,7 @@ type SessionInfo struct {
 type Store interface {
 	SaveSession(info *SessionInfo) error
 	LoadSession() (*SessionInfo, error)
-	UpdateToken(phone, newToken string) error
+	UpdateToken(oldToken, newToken string) error
 }
 
 // ExtendedStore is the optional full session-store contract implemented by
@@ -73,7 +82,7 @@ func NewInMemoryStore() *InMemoryStore {
 func (s *InMemoryStore) SaveSession(info *SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.session = info
+	s.session = cloneSession(info)
 	return nil
 }
 
@@ -81,15 +90,17 @@ func (s *InMemoryStore) SaveSession(info *SessionInfo) error {
 func (s *InMemoryStore) LoadSession() (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.session, nil
+	return cloneSession(s.session), nil
 }
 
 // UpdateToken changes the token of the in-memory session.
-func (s *InMemoryStore) UpdateToken(phone, newToken string) error {
+func (s *InMemoryStore) UpdateToken(oldToken, newToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.session != nil {
+	if s.session != nil && (oldToken == "" || s.session.Token == oldToken) {
 		s.session.Token = newToken
+	} else if s.session != nil {
+		return fmt.Errorf("session: token to replace was not found")
 	}
 	return nil
 }
@@ -130,7 +141,7 @@ func (s *InMemoryStore) DeleteSession(token string) error {
 func (s *InMemoryStore) DeleteAllSessions() error { return s.DeleteSession("") }
 
 // Close releases no resources for the in-memory store.
-func (s *InMemoryStore) Close() error             { return nil }
+func (s *InMemoryStore) Close() error { return nil }
 
 // FileStore persists session data to a JSON file.
 type FileStore struct {
@@ -186,13 +197,16 @@ func (s *FileStore) LoadSession() (*SessionInfo, error) {
 }
 
 // UpdateToken updates the token in the JSON session file.
-func (s *FileStore) UpdateToken(phone, newToken string) error {
+func (s *FileStore) UpdateToken(oldToken, newToken string) error {
 	info, err := s.LoadSession()
 	if err != nil {
 		return err
 	}
 	if info == nil {
-		info = &SessionInfo{Phone: phone}
+		return fmt.Errorf("session: token to replace was not found")
+	}
+	if oldToken != "" && info.Token != oldToken {
+		return fmt.Errorf("session: token to replace was not found")
 	}
 	info.Token = newToken
 	return s.SaveSession(info)
@@ -235,4 +249,16 @@ func (s *FileStore) DeleteSession(token string) error {
 func (s *FileStore) DeleteAllSessions() error { return s.DeleteSession("") }
 
 // Close releases no resources for the file store.
-func (s *FileStore) Close() error             { return nil }
+func (s *FileStore) Close() error { return nil }
+
+func cloneSession(info *SessionInfo) *SessionInfo {
+	if info == nil {
+		return nil
+	}
+	copy := *info
+	if info.UserAgent != nil {
+		ua := *info.UserAgent
+		copy.UserAgent = &ua
+	}
+	return &copy
+}

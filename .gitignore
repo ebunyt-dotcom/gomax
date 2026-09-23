@@ -15,6 +15,7 @@ dist/
 PyMax/
 .agents/
 ORIGINAL_REQUEST.md
+.codebase-memory/
 
 # Session and cache data (protect tokens and private keys!)
 cache/

@@ -27,13 +27,21 @@ type TcpProtocol struct {
 
 // NewTcpProtocol creates a new TcpProtocol instance.
 func NewTcpProtocol() (*TcpProtocol, error) {
+	return NewTcpProtocolVersion(VersionTcp)
+}
+
+// NewTcpProtocolVersion creates a binary protocol with an explicit version byte.
+func NewTcpProtocolVersion(version uint8) (*TcpProtocol, error) {
+	if version == 0 {
+		return nil, fmt.Errorf("init tcp protocol: version must be non-zero")
+	}
 	codec := NewMsgpackCodec()
 	decoder, err := NewPayloadDecoder(codec)
 	if err != nil {
 		return nil, fmt.Errorf("init tcp protocol: %w", err)
 	}
 	return &TcpProtocol{
-		version:        VersionTcp,
+		version:        version,
 		codec:          codec,
 		payloadDecoder: decoder,
 	}, nil

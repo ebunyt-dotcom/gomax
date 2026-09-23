@@ -3,7 +3,9 @@ package chats
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ebunyt-dotcom/gomax/pkg/api"
@@ -13,23 +15,66 @@ import (
 
 // ChatService handles all chat, channel and group related operations.
 type ChatService struct {
-	invoker api.Invoker
+	invoker        api.Invoker
+	messageActions types.MessageActions
+	mu             sync.RWMutex
+	cache          map[int64]types.Chat
 }
 
 // NewChatService creates a new ChatService instance.
 func NewChatService(invoker api.Invoker) *ChatService {
-	return &ChatService{invoker: invoker}
+	return &ChatService{invoker: invoker, cache: make(map[int64]types.Chat)}
+}
+
+// SetMessageActions binds message convenience methods on returned chats.
+func (s *ChatService) SetMessageActions(actions types.MessageActions) {
+	s.mu.Lock()
+	s.messageActions = actions
+	for id, chat := range s.cache {
+		chat.Bind(actions, s)
+		s.cache[id] = chat
+	}
+	s.mu.Unlock()
+}
+
+func (s *ChatService) cacheChat(chat types.Chat) types.Chat {
+	s.mu.RLock()
+	messages := s.messageActions
+	s.mu.RUnlock()
+	chat.Bind(messages, s)
+	if chat.ID == 0 {
+		return chat
+	}
+	s.mu.Lock()
+	s.cache[chat.ID] = chat
+	s.mu.Unlock()
+	return chat
+}
+
+func (s *ChatService) cachedChat(chatID int64) (types.Chat, bool) {
+	s.mu.RLock()
+	chat, ok := s.cache[chatID]
+	s.mu.RUnlock()
+	return chat, ok
+}
+
+func (s *ChatService) removeCachedChat(chatID int64) {
+	s.mu.Lock()
+	delete(s.cache, chatID)
+	s.mu.Unlock()
+}
+
+// SeedCache adds chats received during LOGIN/LOGIN2 synchronization.
+func (s *ChatService) SeedCache(chats []types.Chat) {
+	for _, chat := range chats {
+		s.cacheChat(chat)
+	}
 }
 
 // JoinChat joins a public or private chat by invite link or hash.
 func (s *ChatService) JoinChat(ctx context.Context, link string) (*types.Chat, error) {
-	cleanLink := link
-	if idx := strings.Index(link, "join/"); idx != -1 {
-		cleanLink = link[idx:]
-	}
-
 	payload := map[string]interface{}{
-		"link": cleanLink,
+		"link": link,
 	}
 
 	res, err := s.invoker.Invoke(ctx, protocol.OpChatJoin, payload)
@@ -37,63 +82,84 @@ func (s *ChatService) JoinChat(ctx context.Context, link string) (*types.Chat, e
 		return nil, fmt.Errorf("join chat failed: %w", err)
 	}
 
-	chat := &types.Chat{
-		InviteLink: link,
+	chat := types.ParseChatPayload(res)
+	if chat.InviteLink == "" {
+		chat.InviteLink = link
 	}
-	if chatData, ok := res["chat"].(map[string]interface{}); ok {
-		if id, ok := chatData["id"].(int64); ok {
-			chat.ID = id
-		} else if idFloat, ok := chatData["id"].(float64); ok {
-			chat.ID = int64(idFloat)
-		}
-		if title, ok := chatData["title"].(string); ok {
-			chat.Title = title
-		}
-	}
-	return chat, nil
+	chat = s.cacheChat(chat)
+	return &chat, nil
 }
 
 // InviteUsersToGroup adds users to a group chat by their user IDs.
 func (s *ChatService) InviteUsersToGroup(ctx context.Context, chatID int64, userIDs []int64, showHistory bool) error {
+	_, err := s.InviteUsersToGroupResult(ctx, chatID, userIDs, showHistory)
+	return err
+}
+
+// InviteUsersToGroupResult adds users and returns the updated chat when Max includes it.
+func (s *ChatService) InviteUsersToGroupResult(ctx context.Context, chatID int64, userIDs []int64, showHistory bool) (*types.Chat, error) {
 	payload := map[string]interface{}{
 		"chatId":      chatID,
 		"userIds":     userIDs,
 		"showHistory": showHistory,
-		"operation":   "ADD",
+		"operation":   "add",
 	}
 
-	_, err := s.invoker.Invoke(ctx, protocol.OpChatMembersUpdate, payload)
+	res, err := s.invoker.Invoke(ctx, protocol.OpChatMembersUpdate, payload)
 	if err != nil {
-		return fmt.Errorf("invite users to group failed: %w", err)
+		return nil, fmt.Errorf("invite users to group failed: %w", err)
 	}
-	return nil
+	if _, ok := res["chat"].(map[string]interface{}); ok {
+		chat := types.ParseChatPayload(res)
+		chat = s.cacheChat(chat)
+		return &chat, nil
+	}
+	return nil, nil
 }
 
 // InviteUsersToChannel adds users to a channel by user IDs.
 func (s *ChatService) InviteUsersToChannel(ctx context.Context, chatID int64, userIDs []int64, showHistory bool) error {
-	return s.InviteUsersToGroup(ctx, chatID, userIDs, showHistory)
+	_, err := s.InviteUsersToChannelResult(ctx, chatID, userIDs, showHistory)
+	return err
+}
+
+// InviteUsersToChannelResult adds users and returns an updated channel when present.
+func (s *ChatService) InviteUsersToChannelResult(ctx context.Context, chatID int64, userIDs []int64, showHistory bool) (*types.Chat, error) {
+	return s.InviteUsersToGroupResult(ctx, chatID, userIDs, showHistory)
 }
 
 // JoinGroup joins a group using the same invite-link protocol as JoinChat.
 func (s *ChatService) JoinGroup(ctx context.Context, link string) (*types.Chat, error) {
-	return s.JoinChat(ctx, link)
+	processed, ok := processJoinLink(link)
+	if !ok {
+		return nil, fmt.Errorf("join group failed: invalid group link")
+	}
+	return s.JoinChat(ctx, processed)
 }
 
 // JoinChannel joins a channel using an invite link.
 func (s *ChatService) JoinChannel(ctx context.Context, link string) (*types.Chat, error) {
+	if processed, ok := processJoinLink(link); ok {
+		link = processed
+	}
 	return s.JoinChat(ctx, link)
 }
 
 // ResolveGroupByLink resolves an invite link without joining the chat.
 func (s *ChatService) ResolveGroupByLink(ctx context.Context, link string) (*types.Chat, error) {
-	res, err := s.invoker.Invoke(ctx, protocol.OpLinkInfo, map[string]interface{}{"link": link})
+	processed, ok := processJoinLink(link)
+	if !ok {
+		return nil, fmt.Errorf("resolve group link failed: invalid group link")
+	}
+	res, err := s.invoker.Invoke(ctx, protocol.OpLinkInfo, map[string]interface{}{"link": processed})
 	if err != nil {
 		return nil, fmt.Errorf("resolve group link failed: %w", err)
 	}
 	if raw, ok := res["chat"].(map[string]interface{}); ok {
-		return chatFromMap(raw), nil
+		chat := s.cacheChat(types.ParseChatPayload(raw))
+		return &chat, nil
 	}
-	return chatFromMap(res), nil
+	return nil, nil
 }
 
 // RemoveUsersFromGroup kicks users from a group.
@@ -102,7 +168,7 @@ func (s *ChatService) RemoveUsersFromGroup(ctx context.Context, chatID int64, us
 		"chatId":         chatID,
 		"userIds":        userIDs,
 		"cleanMsgPeriod": cleanMsgPeriod,
-		"operation":      "REMOVE",
+		"operation":      "remove",
 	}
 
 	_, err := s.invoker.Invoke(ctx, protocol.OpChatMembersUpdate, payload)
@@ -114,6 +180,12 @@ func (s *ChatService) RemoveUsersFromGroup(ctx context.Context, chatID int64, us
 
 // CreateGroup creates a new group chat with initial participants.
 func (s *ChatService) CreateGroup(ctx context.Context, name string, participantIDs []int64, notify bool) (*types.Chat, error) {
+	chat, _, err := s.CreateGroupWithMessage(ctx, name, participantIDs, notify)
+	return chat, err
+}
+
+// CreateGroupWithMessage returns both objects produced by Max's MSG_SEND response.
+func (s *ChatService) CreateGroupWithMessage(ctx context.Context, name string, participantIDs []int64, notify bool) (*types.Chat, *types.Message, error) {
 	nowMs := time.Now().UnixMilli()
 	payload := map[string]interface{}{
 		"message": map[string]interface{}{
@@ -121,7 +193,7 @@ func (s *ChatService) CreateGroup(ctx context.Context, name string, participantI
 			"attaches": []interface{}{
 				map[string]interface{}{
 					"_type":    "CONTROL",
-					"event":    "NEW",
+					"event":    "new",
 					"chatType": "CHAT",
 					"title":    name,
 					"userIds":  participantIDs,
@@ -133,20 +205,16 @@ func (s *ChatService) CreateGroup(ctx context.Context, name string, participantI
 
 	res, err := s.invoker.Invoke(ctx, protocol.OpMsgSend, payload)
 	if err != nil {
-		return nil, fmt.Errorf("create group failed: %w", err)
+		return nil, nil, fmt.Errorf("create group failed: %w", err)
 	}
-
-	chat := &types.Chat{
-		Title: name,
+	chatData, ok := res["chat"].(map[string]interface{})
+	if !ok {
+		return nil, nil, nil
 	}
-	if chatData, ok := res["chat"].(map[string]interface{}); ok {
-		if id, ok := chatData["id"].(int64); ok {
-			chat.ID = id
-		} else if idFloat, ok := chatData["id"].(float64); ok {
-			chat.ID = int64(idFloat)
-		}
-	}
-	return chat, nil
+	chat := types.ParseChatPayload(chatData)
+	chat = s.cacheChat(chat)
+	message := types.ParseMessagePayload(res)
+	return &chat, message, nil
 }
 
 // LeaveChat leaves a group chat or channel.
@@ -158,21 +226,65 @@ func (s *ChatService) LeaveChat(ctx context.Context, chatID int64) error {
 	if err != nil {
 		return fmt.Errorf("leave chat failed: %w", err)
 	}
+	s.removeCachedChat(chatID)
 	return nil
 }
 
 // DeleteChat deletes a conversation completely.
 func (s *ChatService) DeleteChat(ctx context.Context, chatID int64) error {
+	return s.DeleteChatWithOptions(ctx, chatID, time.Now().UnixMilli(), true)
+}
+
+// DeleteChatWithOptions exposes PyMax's last-event and for-all controls.
+func (s *ChatService) DeleteChatWithOptions(ctx context.Context, chatID, lastEventTime int64, forAll bool) error {
 	payload := map[string]interface{}{
 		"chatId":        chatID,
-		"lastEventTime": time.Now().UnixMilli(),
-		"forAll":        true,
+		"lastEventTime": lastEventTime,
+		"forAll":        forAll,
 	}
 	_, err := s.invoker.Invoke(ctx, protocol.OpChatDelete, payload)
 	if err != nil {
 		return fmt.Errorf("delete chat failed: %w", err)
 	}
+	s.removeCachedChat(chatID)
 	return nil
+}
+
+// GroupSettings is the complete partial-update settings set supported by PyMax.
+type GroupSettings struct {
+	OnlyOwnerCanChangeIconTitle *bool
+	AllCanPinMessage            *bool
+	OnlyAdminCanAddMember       *bool
+	OnlyAdminCanCall            *bool
+	MembersCanSeePrivateLink    *bool
+}
+
+// ChangeGroupSettingsFull updates only non-nil options.
+func (s *ChatService) ChangeGroupSettingsFull(ctx context.Context, chatID int64, settings GroupSettings) error {
+	options := make(map[string]bool)
+	for key, value := range map[string]*bool{
+		"ONLY_OWNER_CAN_CHANGE_ICON_TITLE": settings.OnlyOwnerCanChangeIconTitle,
+		"ALL_CAN_PIN_MESSAGE":              settings.AllCanPinMessage,
+		"ONLY_ADMIN_CAN_ADD_MEMBER":        settings.OnlyAdminCanAddMember,
+		"ONLY_ADMIN_CAN_CALL":              settings.OnlyAdminCanCall,
+		"MEMBERS_CAN_SEE_PRIVATE_LINK":     settings.MembersCanSeePrivateLink,
+	} {
+		if value != nil {
+			options[key] = *value
+		}
+	}
+	return s.ChangeGroupSettingsWithOptions(ctx, chatID, options)
+}
+
+// ChangeGroupSettingsAction implements types.ChatActions.
+func (s *ChatService) ChangeGroupSettingsAction(ctx context.Context, chatID int64, settings types.ChatSettings) error {
+	return s.ChangeGroupSettingsFull(ctx, chatID, GroupSettings{
+		OnlyOwnerCanChangeIconTitle: settings.OnlyOwnerCanChangeIconTitle,
+		AllCanPinMessage:            settings.AllCanPinMessage,
+		OnlyAdminCanAddMember:       settings.OnlyAdminCanAddMember,
+		OnlyAdminCanCall:            settings.OnlyAdminCanCall,
+		MembersCanSeePrivateLink:    settings.MembersCanSeePrivateLink,
+	})
 }
 
 // ChangeGroupSettings updates permissions and settings for a group chat.
@@ -180,8 +292,8 @@ func (s *ChatService) ChangeGroupSettings(ctx context.Context, chatID int64, all
 	payload := map[string]interface{}{
 		"chatId": chatID,
 		"options": map[string]interface{}{
-			"allCanPinMessage":      allCanPin,
-			"onlyAdminCanAddMember": onlyAdminCanAdd,
+			"ALL_CAN_PIN_MESSAGE":       allCanPin,
+			"ONLY_ADMIN_CAN_ADD_MEMBER": onlyAdminCanAdd,
 		},
 	}
 	_, err := s.invoker.Invoke(ctx, protocol.OpChatUpdate, payload)
@@ -194,7 +306,21 @@ func (s *ChatService) ChangeGroupSettings(ctx context.Context, chatID int64, all
 // ChangeGroupSettingsWithOptions updates every optional group setting. Nil
 // values are omitted, which preserves the PyMax partial-update semantics.
 func (s *ChatService) ChangeGroupSettingsWithOptions(ctx context.Context, chatID int64, options map[string]bool) error {
-	payload := map[string]interface{}{"chatId": chatID, "options": options}
+	normalized := make(map[string]bool, len(options))
+	aliases := map[string]string{
+		"onlyOwnerCanChangeIconTitle": "ONLY_OWNER_CAN_CHANGE_ICON_TITLE",
+		"allCanPinMessage":            "ALL_CAN_PIN_MESSAGE",
+		"onlyAdminCanAddMember":       "ONLY_ADMIN_CAN_ADD_MEMBER",
+		"onlyAdminCanCall":            "ONLY_ADMIN_CAN_CALL",
+		"membersCanSeePrivateLink":    "MEMBERS_CAN_SEE_PRIVATE_LINK",
+	}
+	for key, value := range options {
+		if alias, ok := aliases[key]; ok {
+			key = alias
+		}
+		normalized[key] = value
+	}
+	payload := map[string]interface{}{"chatId": chatID, "options": normalized}
 	if _, err := s.invoker.Invoke(ctx, protocol.OpChatUpdate, payload); err != nil {
 		return fmt.Errorf("change group settings failed: %w", err)
 	}
@@ -224,13 +350,17 @@ func (s *ChatService) GetChatMembers(ctx context.Context, chatID int64, count in
 	if count <= 0 {
 		count = 50
 	}
+	markerValue := 0
+	if marker != "" {
+		if parsed, err := strconv.Atoi(marker); err == nil {
+			markerValue = parsed
+		}
+	}
 	payload := map[string]interface{}{
 		"chatId": chatID,
 		"type":   "MEMBER",
 		"count":  count,
-	}
-	if marker != "" {
-		payload["marker"] = marker
+		"marker": markerValue,
 	}
 
 	res, err := s.invoker.Invoke(ctx, protocol.OpChatMembers, payload)
@@ -241,23 +371,14 @@ func (s *ChatService) GetChatMembers(ctx context.Context, chatID int64, count in
 	var members []types.Member
 	var nextMarker string
 
-	if mStr, ok := res["marker"].(string); ok {
-		nextMarker = mStr
+	if value, ok := chatInt64(res["marker"]); ok {
+		nextMarker = strconv.FormatInt(value, 10)
 	}
 
 	if membersList, ok := res["members"].([]interface{}); ok {
 		for _, item := range membersList {
 			if m, ok := item.(map[string]interface{}); ok {
-				var mem types.Member
-				if uid, ok := m["userId"].(int64); ok {
-					mem.UserID = uid
-				} else if uidF, ok := m["userId"].(float64); ok {
-					mem.UserID = int64(uidF)
-				}
-				if role, ok := m["role"].(string); ok {
-					mem.Role = role
-				}
-				members = append(members, mem)
+				members = append(members, parseMember(m))
 			}
 		}
 	}
@@ -280,14 +401,7 @@ func (s *ChatService) GetChatMembersPage(ctx context.Context, chatID int64, mark
 	if list, ok := res["members"].([]interface{}); ok {
 		for _, item := range list {
 			if m, ok := item.(map[string]interface{}); ok {
-				member := types.Member{}
-				if v, ok := chatInt64(m["userId"]); ok {
-					member.UserID = v
-				}
-				if v, ok := m["role"].(string); ok {
-					member.Role = v
-				}
-				members = append(members, member)
+				members = append(members, parseMember(m))
 			}
 		}
 	}
@@ -297,15 +411,14 @@ func (s *ChatService) GetChatMembersPage(ctx context.Context, chatID int64, mark
 
 // FetchChats retrieves dialogs and active chats list.
 func (s *ChatService) FetchChats(ctx context.Context, count int, marker string) ([]types.Chat, string, error) {
-	if count <= 0 {
-		count = 40
-	}
-	payload := map[string]interface{}{
-		"count": count,
-	}
+	_ = count // retained for source compatibility; Max accepts only marker here.
+	markerValue := time.Now().UnixMilli()
 	if marker != "" {
-		payload["marker"] = marker
+		if parsed, err := strconv.ParseInt(marker, 10, 64); err == nil {
+			markerValue = parsed
+		}
 	}
+	payload := map[string]interface{}{"marker": markerValue}
 
 	res, err := s.invoker.Invoke(ctx, protocol.OpChatsList, payload)
 	if err != nil {
@@ -314,23 +427,14 @@ func (s *ChatService) FetchChats(ctx context.Context, count int, marker string) 
 
 	var chats []types.Chat
 	var nextMarker string
-	if mStr, ok := res["marker"].(string); ok {
-		nextMarker = mStr
+	if value, ok := chatInt64(res["marker"]); ok {
+		nextMarker = strconv.FormatInt(value, 10)
 	}
 
 	if chatsList, ok := res["chats"].([]interface{}); ok {
 		for _, item := range chatsList {
 			if c, ok := item.(map[string]interface{}); ok {
-				var chat types.Chat
-				if id, ok := c["id"].(int64); ok {
-					chat.ID = id
-				} else if idF, ok := c["id"].(float64); ok {
-					chat.ID = int64(idF)
-				}
-				if title, ok := c["title"].(string); ok {
-					chat.Title = title
-				}
-				chats = append(chats, chat)
+				chats = append(chats, s.cacheChat(types.ParseChatPayload(c)))
 			}
 		}
 	}
@@ -340,16 +444,33 @@ func (s *ChatService) FetchChats(ctx context.Context, count int, marker string) 
 
 // GetChats retrieves chat metadata for the requested IDs.
 func (s *ChatService) GetChats(ctx context.Context, chatIDs []int64) ([]types.Chat, error) {
-	res, err := s.invoker.Invoke(ctx, protocol.OpChatInfo, map[string]interface{}{"chatIds": chatIDs})
-	if err != nil {
-		return nil, fmt.Errorf("get chats failed: %w", err)
+	found := make(map[int64]types.Chat, len(chatIDs))
+	missing := make([]int64, 0, len(chatIDs))
+	for _, chatID := range chatIDs {
+		if chat, ok := s.cachedChat(chatID); ok {
+			found[chatID] = chat
+		} else {
+			missing = append(missing, chatID)
+		}
 	}
-	var out []types.Chat
-	if list, ok := res["chats"].([]interface{}); ok {
-		for _, item := range list {
-			if m, ok := item.(map[string]interface{}); ok {
-				out = append(out, *chatFromMap(m))
+	if len(missing) > 0 {
+		res, err := s.invoker.Invoke(ctx, protocol.OpChatInfo, map[string]interface{}{"chatIds": missing})
+		if err != nil {
+			return nil, fmt.Errorf("get chats failed: %w", err)
+		}
+		if list, ok := res["chats"].([]interface{}); ok {
+			for _, item := range list {
+				if m, ok := item.(map[string]interface{}); ok {
+					chat := s.cacheChat(types.ParseChatPayload(m))
+					found[chat.ID] = chat
+				}
 			}
+		}
+	}
+	out := make([]types.Chat, 0, len(chatIDs))
+	for _, chatID := range chatIDs {
+		if chat, ok := found[chatID]; ok {
+			out = append(out, chat)
 		}
 	}
 	return out, nil
@@ -357,7 +478,14 @@ func (s *ChatService) GetChats(ctx context.Context, chatIDs []int64) ([]types.Ch
 
 // GetChat is a concise alias for GetChatInfo.
 func (s *ChatService) GetChat(ctx context.Context, chatID int64) (*types.Chat, error) {
-	return s.GetChatInfo(ctx, chatID)
+	chats, err := s.GetChats(ctx, []int64{chatID})
+	if err != nil {
+		return nil, err
+	}
+	if len(chats) == 0 {
+		return nil, fmt.Errorf("chat %d was not found in response", chatID)
+	}
+	return &chats[0], nil
 }
 
 // LeaveGroup and LeaveChannel are explicit aliases matching PyMax's API.
@@ -385,7 +513,7 @@ func (s *ChatService) GetJoinRequests(ctx context.Context, chatID int64, count i
 	if list, ok := res["members"].([]interface{}); ok {
 		for _, item := range list {
 			if m, ok := item.(map[string]interface{}); ok {
-				out = append(out, types.Member{UserID: mustChatInt64(m["userId"]), Role: stringValue(m["role"])})
+				out = append(out, parseMember(m))
 			}
 		}
 	}
@@ -394,7 +522,7 @@ func (s *ChatService) GetJoinRequests(ctx context.Context, chatID int64, count i
 
 // ConfirmJoinRequests approves pending membership requests.
 func (s *ChatService) ConfirmJoinRequests(ctx context.Context, chatID int64, userIDs []int64, showHistory bool) error {
-	return s.memberRequestAction(ctx, chatID, userIDs, "ADD", &showHistory)
+	return s.memberRequestAction(ctx, chatID, userIDs, "add", &showHistory)
 }
 
 // ConfirmJoinRequest approves one pending membership request.
@@ -404,7 +532,7 @@ func (s *ChatService) ConfirmJoinRequest(ctx context.Context, chatID, userID int
 
 // DeclineJoinRequests rejects pending membership requests.
 func (s *ChatService) DeclineJoinRequests(ctx context.Context, chatID int64, userIDs []int64) error {
-	return s.memberRequestAction(ctx, chatID, userIDs, "REMOVE", nil)
+	return s.memberRequestAction(ctx, chatID, userIDs, "remove", nil)
 }
 
 // DeclineJoinRequest rejects one pending membership request.
@@ -460,9 +588,11 @@ func (s *ChatService) ReworkInviteLinkChat(ctx context.Context, chatID int64) (*
 		return nil, fmt.Errorf("rework invite link failed: %w", err)
 	}
 	if raw, ok := res["chat"].(map[string]interface{}); ok {
-		return chatFromMap(raw), nil
+		chat := s.cacheChat(types.ParseChatPayload(raw))
+		return &chat, nil
 	}
-	return chatFromMap(res), nil
+	chat := s.cacheChat(types.ParseChatPayload(res))
+	return &chat, nil
 }
 
 // FetchChatsFromMarker uses PyMax's millisecond integer marker.
@@ -478,7 +608,7 @@ func (s *ChatService) FetchChatsFromMarker(ctx context.Context, marker int64) ([
 	if list, ok := res["chats"].([]interface{}); ok {
 		for _, item := range list {
 			if raw, ok := item.(map[string]interface{}); ok {
-				out = append(out, *chatFromMap(raw))
+				out = append(out, s.cacheChat(types.ParseChatPayload(raw)))
 			}
 		}
 	}
@@ -525,7 +655,12 @@ func (s *ChatService) GetChatInfo(ctx context.Context, chatID int64) (*types.Cha
 	if count, ok := src["membersCount"].(float64); ok {
 		chat.MembersCount = int(count)
 	}
-	return chat, nil
+	parsed := types.ParseChatPayload(src)
+	if parsed.ID == 0 {
+		parsed.ID = chat.ID
+	}
+	parsed = s.cacheChat(parsed)
+	return &parsed, nil
 }
 
 // PublicSearch searches public channels and groups by query string.
@@ -588,24 +723,32 @@ func mustChatInt64(value interface{}) int64 { n, _ := chatInt64(value); return n
 func stringValue(value interface{}) string  { v, _ := value.(string); return v }
 
 func chatFromMap(m map[string]interface{}) *types.Chat {
-	chat := &types.Chat{}
-	if v, ok := chatInt64(m["id"]); ok {
-		chat.ID = v
+	chat := types.ParseChatPayload(m)
+	return &chat
+}
+
+func processJoinLink(link string) (string, bool) {
+	index := strings.Index(link, "join/")
+	if index < 0 {
+		return "", false
 	}
-	if v, ok := m["title"].(string); ok {
-		chat.Title = v
+	return link[index:], true
+}
+
+func parseMember(raw map[string]interface{}) types.Member {
+	member := types.Member{UserID: mustChatInt64(raw["userId"]), Role: stringValue(raw["role"])}
+	if contact, ok := raw["contact"].(map[string]interface{}); ok {
+		parsed := types.ParseUserPayload(contact)
+		member.Contact = &parsed
+		if member.UserID == 0 {
+			member.UserID = parsed.ID
+		}
 	}
-	if v, ok := m["description"].(string); ok {
-		chat.Description = v
+	if presence, ok := raw["presence"].(map[string]interface{}); ok {
+		parsed := &types.Presence{}
+		parsed.Seen, _ = types.Int64Value(presence["seen"])
+		parsed.StatusCode, _ = types.Int64Value(presence["status"])
+		member.Presence = parsed
 	}
-	if v, ok := m["isChannel"].(bool); ok {
-		chat.IsChannel = v
-	}
-	if v, ok := m["isPublic"].(bool); ok {
-		chat.IsPublic = v
-	}
-	if v, ok := chatInt64(m["membersCount"]); ok {
-		chat.MembersCount = int(v)
-	}
-	return chat
+	return member
 }

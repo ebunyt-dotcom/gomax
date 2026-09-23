@@ -208,6 +208,16 @@ func TestAdversarial_MsgpackCodec_FuzzMalformedData(t *testing.T) {
 	}
 }
 
+func TestAdversarial_MsgpackCodecRejectsHugeDeclaredArray(t *testing.T) {
+	codec := protocol.NewMsgpackCodec()
+	// array32 with a 0xffffffff element count and no elements. The decoder
+	// must reject this before the msgpack library attempts an allocation.
+	_, err := codec.Decode([]byte{0xdd, 0xff, 0xff, 0xff, 0xff})
+	if err == nil {
+		t.Fatal("expected unsafe array length to be rejected")
+	}
+}
+
 func TestAdversarial_MsgpackCodec_DeeplyNestedExt1(t *testing.T) {
 	codec := protocol.NewMsgpackCodec()
 
@@ -340,8 +350,8 @@ func TestAdversarial_LZ4_DecompressionBombSafety(t *testing.T) {
 	// Offset: 0x0001 (offset 1)
 	// Then a series of 0xFF bytes to expand match length beyond 5MB
 	var bomb bytes.Buffer
-	bomb.WriteByte(0x1F) // litLen = 1, matchLen = 19 + extra
-	bomb.WriteByte('A')  // 1 literal byte
+	bomb.WriteByte(0x1F)                                // litLen = 1, matchLen = 19 + extra
+	bomb.WriteByte('A')                                 // 1 literal byte
 	binary.Write(&bomb, binary.LittleEndian, uint16(1)) // offset 1
 
 	// Add 25,000 0xFF bytes -> match length = 25,000 * 255 = ~6.3 MB (> 5 MB)

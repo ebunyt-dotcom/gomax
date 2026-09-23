@@ -7,13 +7,13 @@
 | Транспорт | Клиент | Назначение |
 |---|---|---|
 | TLS TCP | `NewClient` | Мобильный handshake и SMS |
-| Binary WebSocket | `NewWebClient` | Web handshake и QR |
+| Text WebSocket (JSON) | `NewWebClient` | Web handshake и QR |
 
 По умолчанию используются `api2.oneme.ru:443` и `wss://api.oneme.ru/websocket`.
 
-## Бинарный frame
+## TCP frame
 
-TCP и binary WebSocket используют 10-байтный заголовок Big-Endian:
+TCP использует 10-байтный заголовок Big-Endian:
 
 | Байты | Поле | Размер |
 |---|---|---:|
@@ -25,6 +25,10 @@ TCP и binary WebSocket используют 10-байтный заголово�
 | `7..9` | `PayloadLen` | 3 |
 
 Payload — MessagePack. Команды: `0 REQUEST`, `1 RESPONSE`, `2 EVENT`, `3 ERROR`. `Sequence` связывает ответ с запросом.
+
+WebSocket работает по протоколу v11: каждый frame — текстовый JSON-массив.
+`WSReader` также принимает binary frame для совместимости, но `WebClient`
+отправляет JSON text frames, как PyMax.
 
 ## Сжатие
 

@@ -127,5 +127,5 @@ err := client.Auth.VerifyEmailCode(ctx, trackID, "123456")
 
 ```go
 err := client.Auth.CommitTwoFactor(ctx, trackID, password, hint,
-    []string{"EMAIL"})
+	[]authapi.TwoFactorAction{authapi.TwoFactorSetPassword, authapi.TwoFactorHint, authapi.TwoFactorEmail})
 ```

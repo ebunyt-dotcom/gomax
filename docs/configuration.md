@@ -37,8 +37,9 @@ cfg.SessionName = "account.json"
 cfg.PersistSession = true
 ```
 
-Если `Store` задан, он используется вместо автоматического store. Для сессии
-только в памяти задайте `cfg.Store = session.NewInMemoryStore()`.
+Если `Store` задан, он используется вместо автоматического store. При
+`PersistSession=false` пользовательский `Store` намеренно игнорируется и
+используется изолированный `InMemoryStore`, как в PyMax.
 
 ## Переподключение и таймауты
 
@@ -48,7 +49,12 @@ cfg.PersistSession = true
 | `ReconnectDelay` | `1s` | Пауза между попытками. |
 | `RequestTimeout` | `30s` | Таймаут RPC-запроса. |
 | `UploadTimeout` | `15m` | Максимальное ожидание загрузки. |
+| `DisableUploadTimeout` | `false` | Отключить общий HTTP upload timeout. |
 | `Interactive` | `true` | Передавать серверу активный статус. |
+| `Relogin` | `true` | Сбросить отозванный token и заново авторизоваться. |
+| `PasswordMaxAttempts` | `nil` | Лимит 2FA; `nil` — без лимита, `0`/отрицательное значение — сразу отказать. |
+| `LogLevel` | `INFO` | Уровень внутренних логов. |
+| `Telemetry` | `true` | Отправлять Max фоновые telemetry events. |
 
 ## Профиль устройства
 
@@ -71,6 +77,11 @@ cfg.PersistSession = true
 | `Arch` | Архитектура, например `arm64-v8a`. |
 | `PushDeviceType` | Тип push-сервиса. |
 | `UserAgent` | Полная ручная замена user-agent map. |
+| `ProtocolVersion` | Версия TCP frame, по умолчанию `10`. |
+| `ClientSessionID` | Явный session ID; `1..70` генерируется автоматически. |
+| `RestoreUserAgentFromSession` | Восстанавливать характеристики устройства из сессии. |
+| `DisableUserAgentRestore` | Явно отключить восстановление user-agent. |
+| `Sync` | Точечные overrides sync-маркеров и config hash. |
 
 ## Авторизация и регистрация
 

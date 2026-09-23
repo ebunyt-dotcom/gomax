@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
 	selfapi "github.com/ebunyt-dotcom/gomax/pkg/api/selfapi"
+	sessionapi "github.com/ebunyt-dotcom/gomax/pkg/api/sessionapi"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/uploads"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/users"
 	"github.com/ebunyt-dotcom/gomax/pkg/auth"
@@ -26,6 +28,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/fingerprint"
 	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 	"github.com/ebunyt-dotcom/gomax/pkg/session"
+	"github.com/ebunyt-dotcom/gomax/pkg/telemetry"
 	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
@@ -45,25 +48,40 @@ type Config struct {
 	Token          string
 	PersistSession bool
 	Reconnect      bool
+	Relogin        bool
 	ReconnectDelay time.Duration
 	RequestTimeout time.Duration
-	Interactive    bool
-	UploadTimeout  time.Duration
+	// PasswordMaxAttempts is nil for unlimited attempts. Zero or a negative
+	// value rejects a password challenge immediately, matching PyMax.
+	PasswordMaxAttempts         *int
+	LogLevel                    string
+	Telemetry                   bool
+	Interactive                 bool
+	UploadTimeout               time.Duration
+	DisableUploadTimeout        bool
+	ProtocolVersion             uint8
+	ClientSessionID             int
+	RestoreUserAgentFromSession bool
+	DisableUserAgentRestore     bool
+	Sync                        SyncOverrides
 
 	// Device/user-agent fields mirror PyMax's ExtraConfig and can be used to
 	// override the built-in Android profile sent during handshake and login.
-	DeviceType     string
-	AppVersion     string
-	BuildNumber    int
-	OSVersion      string
-	Timezone       string
-	Screen         string
-	Locale         string
-	DeviceLocale   string
-	DeviceName     string
-	Arch           string
-	PushDeviceType string
-	UserAgent      map[string]interface{}
+	DeviceType      string
+	AppVersion      string
+	BuildNumber     int
+	OSVersion       string
+	Timezone        string
+	Screen          string
+	Locale          string
+	DeviceLocale    string
+	DeviceName      string
+	Arch            string
+	PushDeviceType  string
+	Release         int
+	HeaderUserAgent string
+	UserAgent       map[string]interface{}
+	Fingerprint     *fingerprint.ApkBuildFingerprint
 
 	Registration *RegistrationConfig
 
@@ -78,6 +96,15 @@ type Config struct {
 	QrAuthFlow *auth.QrAuthFlow
 }
 
+// SyncOverrides selectively replaces sync markers loaded from the session.
+type SyncOverrides struct {
+	ChatsSync    *int64
+	ContactsSync *int64
+	DraftsSync   *int64
+	PresenceSync *int64
+	ConfigHash   *string
+}
+
 // RegistrationConfig contains the profile fields required to finish a new
 // account login when SMS verification returns a registration token.
 type RegistrationConfig struct {
@@ -88,34 +115,60 @@ type RegistrationConfig struct {
 // DefaultConfig returns default client configuration matching PyMax.
 func DefaultConfig() *Config {
 	return &Config{
-		Host:           "api2.oneme.ru",
-		Port:           443,
-		URL:            "wss://api.oneme.ru/websocket",
-		UseSSL:         true,
-		WorkDir:        "cache",
-		SessionName:    "main.json",
-		PersistSession: true,
-		Reconnect:      true,
-		ReconnectDelay: time.Second,
-		RequestTimeout: 30 * time.Second,
-		Interactive:    true,
-		UploadTimeout:  15 * time.Minute,
-		DeviceType:     "ANDROID",
-		AppVersion:     "26.25.0",
-		BuildNumber:    6790,
-		OSVersion:      "Android 14",
-		Timezone:       "Europe/Moscow",
-		Screen:         "405dpi 405dpi 1080x2400",
-		Locale:         "ru",
-		DeviceLocale:   "ru",
-		DeviceName:     "Samsung SM-A536B",
-		Arch:           "arm64-v8a",
-		PushDeviceType: "GCM",
+		Host:                        "api2.oneme.ru",
+		Port:                        443,
+		URL:                         "wss://api.oneme.ru/websocket",
+		UseSSL:                      true,
+		WorkDir:                     "cache",
+		SessionName:                 "main.json",
+		PersistSession:              true,
+		Reconnect:                   true,
+		Relogin:                     true,
+		ReconnectDelay:              time.Second,
+		RequestTimeout:              30 * time.Second,
+		PasswordMaxAttempts:         nil,
+		LogLevel:                    "INFO",
+		Telemetry:                   true,
+		Interactive:                 true,
+		UploadTimeout:               15 * time.Minute,
+		ProtocolVersion:             protocol.VersionTcp,
+		RestoreUserAgentFromSession: true,
+		DeviceType:                  "ANDROID",
+		AppVersion:                  "26.25.0",
+		BuildNumber:                 6790,
+		OSVersion:                   "Android 14",
+		Timezone:                    "Europe/Moscow",
+		Screen:                      "405dpi 405dpi 1080x2400",
+		Locale:                      "ru",
+		DeviceLocale:                "ru",
+		DeviceName:                  "Samsung SM-A536B",
+		Arch:                        "arm64-v8a",
+		PushDeviceType:              "GCM",
 	}
 }
 
 func applyDefaults(cfg *Config, web bool) {
 	defaults := DefaultConfig()
+	if cfg.WorkDir == "" {
+		cfg.WorkDir = defaults.WorkDir
+	}
+	if cfg.SessionName == "" {
+		cfg.SessionName = defaults.SessionName
+	}
+	if cfg.DisableUploadTimeout || cfg.UploadTimeout < 0 {
+		cfg.UploadTimeout = 0
+	} else if cfg.UploadTimeout == 0 {
+		cfg.UploadTimeout = defaults.UploadTimeout
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = defaults.LogLevel
+	}
+	if cfg.ProtocolVersion == 0 {
+		cfg.ProtocolVersion = defaults.ProtocolVersion
+	}
+	if !cfg.DisableUserAgentRestore {
+		cfg.RestoreUserAgentFromSession = true
+	}
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = defaults.RequestTimeout
 	}
@@ -185,6 +238,12 @@ func mobileUserAgent(cfg *Config) map[string]interface{} {
 	if cfg.PushDeviceType != "" {
 		userAgent["pushDeviceType"] = cfg.PushDeviceType
 	}
+	if cfg.Release != 0 {
+		userAgent["release"] = cfg.Release
+	}
+	if cfg.HeaderUserAgent != "" {
+		userAgent["headerUserAgent"] = cfg.HeaderUserAgent
+	}
 	return userAgent
 }
 
@@ -197,19 +256,23 @@ type Client struct {
 	fpGen     *fingerprint.FingerprintGenerator
 	callsSeed int64
 
-	Messages *messages.MessageService
-	Auth     *authapi.AuthService
-	Chats    *chats.ChatService
-	Users    *users.UserService
-	Uploads  *uploads.UploadService
-	Bots     *bots.BotsService
-	Self     *selfapi.SelfService
+	Messages  *messages.MessageService
+	Auth      *authapi.AuthService
+	Chats     *chats.ChatService
+	Users     *users.UserService
+	Uploads   *uploads.UploadService
+	Bots      *bots.BotsService
+	Self      *selfapi.SelfService
+	Session   *sessionapi.Service
+	Telemetry *telemetry.Service
 
-	Me      *types.User
-	mu      sync.RWMutex
-	started bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	Me           *types.User
+	ChatCache    map[int64]types.Chat
+	MessageCache map[int64][]types.Message
+	mu           sync.RWMutex
+	started      bool
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // CallsSeed returns the callsSeed received from the handshake.
@@ -308,6 +371,23 @@ func randomHex(n int) string {
 	return hex.EncodeToString(bytes)
 }
 
+func randomClientSessionID() int {
+	value, err := rand.Int(rand.Reader, big.NewInt(70))
+	if err != nil {
+		return 1
+	}
+	return int(value.Int64()) + 1
+}
+
+func (c *Client) logf(format string, args ...any) {
+	switch strings.ToUpper(c.cfg.LogLevel) {
+	case "OFF", "NONE", "FATAL", "ERROR", "WARN", "WARNING":
+		return
+	default:
+		log.Printf("[gomax] "+format, args...)
+	}
+}
+
 // NewClient creates a new Max TCP client matching pymax.Client.
 func NewClient(cfg *Config) *Client {
 	if cfg == nil {
@@ -321,35 +401,71 @@ func NewClient(cfg *Config) *Client {
 	}
 	applyDefaults(cfg, false)
 	var store session.Store
-	if cfg.Store != nil {
-		store = cfg.Store
-	} else if cfg.PersistSession {
-		store = session.NewFileStore(cfg.WorkDir, cfg.SessionName)
-	} else {
+	if !cfg.PersistSession {
 		store = session.NewInMemoryStore()
+	} else if cfg.Store != nil {
+		store = cfg.Store
+	} else {
+		store = session.NewFileStore(cfg.WorkDir, cfg.SessionName)
 	}
 
+	fingerprintData := cfg.Fingerprint
+	if fingerprintData == nil {
+		if resolved, err := fingerprint.NewVersionCatalog().Resolve(cfg.AppVersion); err == nil {
+			fingerprintData = resolved
+		} else {
+			fingerprintData = fingerprint.DefaultFingerprint()
+		}
+	}
 	c := &Client{
-		cfg:    cfg,
-		store:  store,
-		router: dispatch.NewRouter(),
-		fpGen:  fingerprint.NewFingerprintGenerator(fingerprint.DefaultFingerprint()),
+		cfg:          cfg,
+		store:        store,
+		router:       dispatch.NewRouter(),
+		fpGen:        fingerprint.NewFingerprintGenerator(fingerprintData),
+		ChatCache:    make(map[int64]types.Chat),
+		MessageCache: make(map[int64][]types.Message),
 	}
 
 	c.Messages = messages.NewMessageService(c)
 	c.Auth = authapi.NewAuthService(c)
 	c.Chats = chats.NewChatService(c)
 	c.Users = users.NewUserService(c)
-	c.Uploads = uploads.NewUploadService(c)
+	c.Chats.SetMessageActions(c.Messages)
+	c.Uploads = uploads.NewUploadServiceWithOptions(c, uploads.Options{
+		Timeout: cfg.UploadTimeout, ProxyURL: cfg.Proxy,
+		UserAgent: fmt.Sprintf("OKMessages/%s (%s; %s; %s)", cfg.AppVersion, cfg.OSVersion, cfg.DeviceName, cfg.Screen),
+	})
+	c.Messages.SetAttachmentReadyWaiter(c.Uploads.WaitForMessageAttachments)
 	c.Bots = bots.NewBotsService(c)
 	c.Self = selfapi.NewSelfService(c)
+	c.Self.SetUserActions(c.Users)
+	c.Session = sessionapi.NewService(c)
+	c.Telemetry = telemetry.NewService(c, c.telemetrySnapshot)
+	c.Self.SetSessionHooks(
+		func(_ string, newToken string) error { return updateStoredToken(c.store, c.cfg, newToken) },
+		func(hash string) error { return updateStoredConfigHash(c.store, hash) },
+	)
 
 	return c
 }
 
+func (c *Client) telemetrySnapshot() telemetry.Snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	chats := make([]types.Chat, 0, len(c.ChatCache))
+	for _, chat := range c.ChatCache {
+		chats = append(chats, chat)
+	}
+	userID := int64(0)
+	if c.Me != nil {
+		userID = c.Me.ID
+	}
+	return telemetry.Snapshot{Ready: c.started && c.conn != nil && c.conn.IsOpen() && c.Me != nil, UserID: userID, Chats: chats}
+}
+
 // OnMessage registers an incoming message listener.
-func (c *Client) OnMessage(handler func(ctx context.Context, msg *types.Message) error) {
-	c.router.OnMessage(handler)
+func (c *Client) OnMessage(handler func(ctx context.Context, msg *types.Message) error, filters ...dispatch.MessagePredicate) {
+	c.router.OnMessage(handler, filters...)
 }
 
 // OnStart registers an on_start listener executed after successful login.
@@ -358,8 +474,8 @@ func (c *Client) OnStart(handler func(ctx context.Context) error) {
 }
 
 // OnMessageEdit registers a handler for message edit events.
-func (c *Client) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error) {
-	c.router.OnMessageEdit(handler)
+func (c *Client) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error, filters ...dispatch.MessagePredicate) {
+	c.router.OnMessageEdit(handler, filters...)
 }
 
 // OnMessageDelete registers a handler for message delete events.
@@ -367,34 +483,38 @@ func (c *Client) OnMessageDelete(handler func(ctx context.Context, chatID, msgID
 	c.router.OnMessageDelete(handler)
 }
 
+func (c *Client) OnMessageDeleteEvent(handler func(ctx context.Context, ev *types.MessageDeleteEvent) error, filters ...dispatch.MessageDeletePredicate) {
+	c.router.OnMessageDeleteEvent(handler, filters...)
+}
+
 // OnMessageRead registers a read-marker handler.
-func (c *Client) OnMessageRead(handler func(ctx context.Context, ev *types.MessageReadEvent) error) {
-	c.router.OnMessageRead(handler)
+func (c *Client) OnMessageRead(handler func(ctx context.Context, ev *types.MessageReadEvent) error, filters ...dispatch.MessageReadPredicate) {
+	c.router.OnMessageRead(handler, filters...)
 }
 
 // OnUserUpdate registers a contact/profile update handler.
-func (c *Client) OnUserUpdate(handler func(ctx context.Context, ev *types.UserUpdateEvent) error) {
-	c.router.OnUserUpdate(handler)
+func (c *Client) OnUserUpdate(handler func(ctx context.Context, ev *types.UserUpdateEvent) error, filters ...dispatch.UserUpdatePredicate) {
+	c.router.OnUserUpdate(handler, filters...)
 }
 
 // OnReaction registers a handler for reaction add/remove events.
-func (c *Client) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error) {
-	c.router.OnReaction(handler)
+func (c *Client) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error, filters ...dispatch.ReactionPredicate) {
+	c.router.OnReaction(handler, filters...)
 }
 
 // OnChatUpdate registers a handler for chat metadata update events.
-func (c *Client) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error) {
-	c.router.OnChatUpdate(handler)
+func (c *Client) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error, filters ...dispatch.ChatUpdatePredicate) {
+	c.router.OnChatUpdate(handler, filters...)
 }
 
 // OnPresence registers a handler for user online/offline status events.
-func (c *Client) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error) {
-	c.router.OnPresence(handler)
+func (c *Client) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error, filters ...dispatch.PresencePredicate) {
+	c.router.OnPresence(handler, filters...)
 }
 
 // OnTyping registers a handler for user typing indicator events.
-func (c *Client) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error) {
-	c.router.OnTyping(handler)
+func (c *Client) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error, filters ...dispatch.TypingPredicate) {
+	c.router.OnTyping(handler, filters...)
 }
 
 // OnDisconnect registers a handler called when the client disconnects.
@@ -404,8 +524,132 @@ func (c *Client) OnDisconnect(handler func(ctx context.Context, err error)) {
 
 // OnRaw registers a handler for low-level event frames not consumed by a
 // typed event handler.
-func (c *Client) OnRaw(handler func(ctx context.Context, event *types.RawEvent) error) {
-	c.router.OnEvent(handler)
+func (c *Client) OnRaw(handler func(ctx context.Context, event *types.RawEvent) error, filters ...dispatch.EventPredicate) {
+	c.router.OnEvent(handler, filters...)
+}
+
+func updateStoredToken(store session.Store, cfg *Config, newToken string) error {
+	info, err := store.LoadSession()
+	if err != nil {
+		return err
+	}
+	oldToken := ""
+	if info != nil {
+		oldToken = info.Token
+	}
+	if oldToken == "" {
+		if info == nil {
+			info = &session.SessionInfo{Phone: cfg.Phone, DeviceID: cfg.DeviceID, MTInstanceID: cfg.MtInstanceID}
+		}
+		info.Token = newToken
+		if err := store.SaveSession(info); err != nil {
+			return err
+		}
+	} else if err := store.UpdateToken(oldToken, newToken); err != nil {
+		return err
+	}
+	cfg.Token = newToken
+	return nil
+}
+
+func updateStoredConfigHash(store session.Store, hash string) error {
+	info, err := store.LoadSession()
+	if err != nil || info == nil {
+		return err
+	}
+	info.Sync.ConfigHash = hash
+	return store.SaveSession(info)
+}
+
+func sessionUserAgent(cfg *Config) *session.UserAgentPayload {
+	return &session.UserAgentPayload{DeviceType: cfg.DeviceType, AppVersion: cfg.AppVersion, BuildNumber: cfg.BuildNumber, OSVersion: cfg.OSVersion, Timezone: cfg.Timezone, Screen: cfg.Screen, PushDeviceType: cfg.PushDeviceType, Arch: cfg.Arch, Locale: cfg.Locale, DeviceName: cfg.DeviceName, DeviceLocale: cfg.DeviceLocale, Release: cfg.Release, HeaderUserAgent: cfg.HeaderUserAgent}
+}
+
+func restoreSessionUserAgent(cfg *Config, stored *session.UserAgentPayload) {
+	if stored == nil || cfg.UserAgent != nil || !cfg.RestoreUserAgentFromSession || stored.DeviceType != cfg.DeviceType {
+		return
+	}
+	if stored.DeviceType != "" {
+		cfg.DeviceType = stored.DeviceType
+	}
+	if stored.OSVersion != "" {
+		cfg.OSVersion = stored.OSVersion
+	}
+	if stored.DeviceName != "" {
+		cfg.DeviceName = stored.DeviceName
+	}
+	if stored.Timezone != "" {
+		cfg.Timezone = stored.Timezone
+	}
+	if stored.Screen != "" {
+		cfg.Screen = stored.Screen
+	}
+	if stored.PushDeviceType != "" {
+		cfg.PushDeviceType = stored.PushDeviceType
+	}
+	if stored.Arch != "" {
+		cfg.Arch = stored.Arch
+	}
+	if stored.Locale != "" {
+		cfg.Locale = stored.Locale
+	}
+	if stored.DeviceLocale != "" {
+		cfg.DeviceLocale = stored.DeviceLocale
+	}
+	if stored.Release != 0 {
+		cfg.Release = stored.Release
+	}
+	if stored.HeaderUserAgent != "" {
+		cfg.HeaderUserAgent = stored.HeaderUserAgent
+	}
+}
+
+func resolveSync(saved session.SyncState, overrides SyncOverrides) session.SyncState {
+	if overrides.ChatsSync != nil {
+		saved.ChatsSync = *overrides.ChatsSync
+	}
+	if overrides.ContactsSync != nil {
+		saved.ContactsSync = *overrides.ContactsSync
+	}
+	if overrides.DraftsSync != nil {
+		saved.DraftsSync = *overrides.DraftsSync
+	}
+	if overrides.PresenceSync != nil {
+		saved.PresenceSync = *overrides.PresenceSync
+	}
+	if overrides.ConfigHash != nil {
+		saved.ConfigHash = *overrides.ConfigHash
+	}
+	return saved
+}
+
+func (c *Client) OnError(handler func(ctx context.Context, err error)) { c.router.OnError(handler) }
+func (c *Client) OnErrorScoped(scope dispatch.ErrorScope, handler func(context.Context, error)) {
+	c.router.OnErrorScoped(scope, handler)
+}
+func (c *Client) IncludeRouter(router *dispatch.Router) { c.router.Include(router) }
+
+func (c *Client) Connect(ctx context.Context) error { return c.Start(ctx) }
+func (c *Client) Stop() error                       { return c.Close() }
+func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+	return conn != nil && conn.IsOpen()
+}
+func (c *Client) Relogin(ctx context.Context) error {
+	if err := clearStoredSessionToken(c.store); err != nil {
+		return err
+	}
+	c.cfg.Token = ""
+	c.mu.RLock()
+	conn, started := c.conn, c.started
+	c.mu.RUnlock()
+	if started && conn != nil {
+		conn.Fail(errors.New("relogin requested"))
+		return nil
+	}
+	return c.Start(ctx)
 }
 
 // Invoke implements the api.Invoker interface for RPC commands.
@@ -424,7 +668,7 @@ func (c *Client) Invoke(ctx context.Context, op protocol.Opcode, payload interfa
 	}
 
 	if inbound.Cmd == protocol.CmdError {
-		return nil, fmt.Errorf("api error from server on opcode %s: %v", inbound.Opcode, inbound.Payload)
+		return nil, protocol.NewApiError(inbound)
 	}
 
 	return inbound.Payload, nil
@@ -446,12 +690,33 @@ func (c *Client) Start(ctx context.Context) error {
 		_ = c.Close()
 	}()
 
+	// Validate initial-auth credentials before opening a network connection.
+	// A saved session may supply both fields, so consult the store first.
+	stored, err := c.store.LoadSession()
+	if err != nil {
+		return nonRecoverable(fmt.Errorf("failed to load session: %w", err))
+	}
+	hasToken := c.cfg.Token != ""
+	hasPhone := c.cfg.Phone != ""
+	if stored != nil {
+		hasToken = hasToken || stored.Token != ""
+		hasPhone = hasPhone || stored.Phone != ""
+	}
+	if !hasToken && !hasPhone {
+		return nonRecoverable(errors.New("phone number required for initial authentication"))
+	}
+
 	for {
 		err := c.runSession(c.ctx)
 		if err == nil || errors.Is(err, context.Canceled) || c.ctx.Err() != nil {
 			return nil
 		}
 
+		if c.cfg.Relogin && isInvalidLoginToken(err) {
+			_ = clearStoredSessionToken(c.store)
+			c.cfg.Token = ""
+			continue
+		}
 		var nre *NonRecoverableError
 		if errors.As(err, &nre) {
 			return err
@@ -475,6 +740,21 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 }
 
+// clearStoredSessionToken supports both the current ExtendedStore contract and
+// legacy custom Store implementations. Keeping a token-less record preserves
+// the device identity while guaranteeing that the next run authenticates.
+func clearStoredSessionToken(store session.Store) error {
+	info, err := store.LoadSession()
+	if err != nil || info == nil {
+		return err
+	}
+	if extended, ok := store.(session.ExtendedStore); ok {
+		return extended.DeleteSession(info.Token)
+	}
+	info.Token = ""
+	return store.SaveSession(info)
+}
+
 func (c *Client) runSession(ctx context.Context) error {
 	tcpOpts := transport.DefaultTCPOptions()
 	if c.cfg.Host != "" {
@@ -489,7 +769,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	tcpTransport := transport.NewTCPTransport(tcpOpts)
 	reader := connection.NewTCPReader(tcpTransport)
 
-	tcpProto, err := protocol.NewTcpProtocol()
+	tcpProto, err := protocol.NewTcpProtocolVersion(c.cfg.ProtocolVersion)
 	if err != nil {
 		return fmt.Errorf("init protocol failed: %w", err)
 	}
@@ -519,14 +799,17 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.conn = connManager
 	c.mu.Unlock()
 
-	log.Printf("[gomax] Connecting to Max server at %s:%d (SSL=%v)...", tcpOpts.Host, tcpOpts.Port, tcpOpts.UseSSL)
+	c.logf("Connecting to Max server at %s:%d (SSL=%v)...", tcpOpts.Host, tcpOpts.Port, tcpOpts.UseSSL)
 	if err := connManager.Start(ctx); err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
-	log.Printf("[gomax] Connected to Max server successfully")
+	c.logf("Connected to Max server successfully")
 
 	if c.fpGen == nil {
 		c.fpGen = fingerprint.NewFingerprintGenerator(fingerprint.DefaultFingerprint())
+	}
+	if c.fpGen.VersionName() != "" && c.fpGen.VersionName() != c.cfg.AppVersion {
+		return nonRecoverable(fmt.Errorf("fingerprint version %s does not match configured app version %s", c.fpGen.VersionName(), c.cfg.AppVersion))
 	}
 
 	// Load session info to reuse deviceId and mt_instanceid if previously saved
@@ -537,6 +820,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 
 	if sessInfo != nil {
+		restoreSessionUserAgent(c.cfg, sessInfo.UserAgent)
 		if c.cfg.DeviceID == "" && sessInfo.DeviceID != "" {
 			c.cfg.DeviceID = sessInfo.DeviceID
 		}
@@ -555,10 +839,10 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 
 	// 1. Session Init Handshake
-	csID, err := rand.Int(rand.Reader, big.NewInt(70))
-	clientSessionID := 1
-	if err == nil {
-		clientSessionID = int(csID.Int64()) + 1
+	clientSessionID := c.cfg.ClientSessionID
+	if clientSessionID <= 0 {
+		clientSessionID = randomClientSessionID()
+		c.cfg.ClientSessionID = clientSessionID
 	}
 
 	userAgent := mobileUserAgent(c.cfg)
@@ -570,7 +854,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		"deviceId":        c.cfg.DeviceID,
 	}
 
-	log.Printf("[gomax] Sending mobile session handshake (SESSION_INIT, deviceId=%s, mt_instanceid=%s, clientSessionId=%d)...",
+	c.logf("Sending mobile session handshake (SESSION_INIT, deviceId=%s, mt_instanceid=%s, clientSessionId=%d)...",
 		c.cfg.DeviceID, c.cfg.MtInstanceID, clientSessionID)
 	initRes, err := c.Invoke(ctx, protocol.OpSessionInit, initPayload)
 	if err != nil {
@@ -603,7 +887,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.callsSeed = callsSeed
 	c.mu.Unlock()
 
-	log.Printf("[gomax] Handshake completed successfully (callsSeed=%d)", callsSeed)
+	c.logf("Handshake completed successfully (callsSeed=%d)", callsSeed)
 
 	// 2. Load or execute Auth
 	token := c.cfg.Token
@@ -616,7 +900,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			_ = connManager.Close()
 			return nonRecoverable(errors.New("phone number required for initial authentication"))
 		}
-		log.Printf("[gomax] No active session token found; starting SMS authentication for %s...", c.cfg.Phone)
+		c.logf("No active session token found; starting SMS authentication for %s...", c.cfg.Phone)
 		smsFlow := c.cfg.AuthFlow
 		if smsFlow == nil {
 			smsFlow = auth.NewSmsAuthFlow(nil, nil)
@@ -635,6 +919,8 @@ func (c *Client) runSession(ctx context.Context) error {
 		if smsFlow.Arch == "" {
 			smsFlow.Arch = c.cfg.Arch
 		}
+		smsFlow.PasswordMaxAttempts = c.cfg.PasswordMaxAttempts
+		smsFlow.LogLevel = c.cfg.LogLevel
 
 		authRes, err := smsFlow.Authenticate(ctx, c, c.cfg.Phone)
 		if err != nil {
@@ -657,19 +943,23 @@ func (c *Client) runSession(ctx context.Context) error {
 				token = registeredToken
 			}
 		}
-		_ = c.store.SaveSession(&session.SessionInfo{
+		if err := c.store.SaveSession(&session.SessionInfo{
 			Token:        token,
 			Phone:        c.cfg.Phone,
 			DeviceID:     c.cfg.DeviceID,
 			MTInstanceID: c.cfg.MtInstanceID,
-		})
-		log.Printf("[gomax] Session credentials saved to store")
+			UserAgent:    sessionUserAgent(c.cfg),
+		}); err != nil {
+			_ = connManager.Close()
+			return nonRecoverable(fmt.Errorf("save authenticated session: %w", err))
+		}
+		c.logf("Session credentials saved to store")
 	} else {
-		log.Printf("[gomax] Resuming session for device %s...", c.cfg.DeviceID)
+		c.logf("Resuming session for device %s...", c.cfg.DeviceID)
 	}
 
 	// 3. Login
-	log.Printf("[gomax] Logging in with session token...")
+	c.logf("Logging in with session token...")
 	syncState := session.SyncState{
 		ChatsSync:    -1,
 		ContactsSync: -1,
@@ -683,6 +973,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			syncState.ConfigHash = session.DefaultConfigHash
 		}
 	}
+	syncState = resolveSync(syncState, c.cfg.Sync)
 	loginPayload := map[string]interface{}{
 		"token":        token,
 		"deviceId":     c.cfg.DeviceID,
@@ -698,10 +989,12 @@ func (c *Client) runSession(ctx context.Context) error {
 		"configHash": syncState.ConfigHash,
 	}
 	if callsSeed != 0 {
-		fp, _ := c.fpGen.GenerateFingerprint(c.cfg.DeviceID, callsSeed, c.cfg.Arch)
+		fp, fpErr := c.fpGen.GenerateFingerprint(c.cfg.DeviceID, callsSeed, c.cfg.Arch)
+		if fpErr != nil {
+			return nonRecoverable(fpErr)
+		}
 		if len(fp) > 0 {
 			loginPayload["chatCacheFingerprint"] = fp
-			loginPayload["fingerprint"] = fp
 		}
 	}
 
@@ -721,11 +1014,37 @@ func (c *Client) runSession(ctx context.Context) error {
 		return nonRecoverable(fmt.Errorf("login rejected by server: %v (message: %v)", errVal, msg))
 	}
 
+	if flags, ok := loginRes["login2Flags"].(map[string]interface{}); ok {
+		configEnabled, _ := flags["configEnabled"].(bool)
+		contactEnabled, _ := flags["contactEnabled"].(bool)
+		profileEnabled, _ := flags["profileEnabled"].(bool)
+		if configEnabled || contactEnabled || profileEnabled {
+			contactsSync := int64(-1)
+			if contactEnabled {
+				contactsSync = syncState.ContactsSync
+			}
+			login2Res, login2Err := c.Invoke(ctx, protocol.OpLogin2, map[string]interface{}{
+				"needProfile": profileEnabled, "contactsSync": contactsSync, "configHash": syncState.ConfigHash,
+			})
+			if login2Err != nil {
+				_ = connManager.Close()
+				return fmt.Errorf("login2 failed: %w", login2Err)
+			}
+			for key, value := range login2Res {
+				loginRes[key] = value
+			}
+		}
+	}
+
 	// If token refreshed
 	if newToken, ok := loginRes["token"].(string); ok && newToken != "" && newToken != token {
+		oldToken := token
 		token = newToken
-		_ = c.store.UpdateToken(c.cfg.Phone, token)
+		if err := c.store.UpdateToken(oldToken, token); err != nil {
+			return fmt.Errorf("persist refreshed token: %w", err)
+		}
 	}
+	c.cfg.Token = token
 	if syncTime, ok := extractInt64(loginRes["time"]); ok {
 		syncState.ChatsSync = syncTime
 		syncState.ContactsSync = syncTime
@@ -733,47 +1052,89 @@ func (c *Client) runSession(ctx context.Context) error {
 		syncState.PresenceSync = syncTime
 	}
 	if config, ok := loginRes["config"].(map[string]interface{}); ok {
-		if hash, ok := config["hash"].(string); ok && hash != "" {
+		if hash := types.StringValue(config["hash"]); hash != "" {
 			syncState.ConfigHash = hash
 		}
 	}
-	_ = c.store.SaveSession(&session.SessionInfo{
+	if err := c.store.SaveSession(&session.SessionInfo{
 		Token:        token,
 		Phone:        c.cfg.Phone,
 		DeviceID:     c.cfg.DeviceID,
 		MTInstanceID: c.cfg.MtInstanceID,
+		UserAgent:    sessionUserAgent(c.cfg),
 		Sync:         syncState,
-	})
-
-	// Resolve Self User profile
-	c.Me = &types.User{}
-	if profileData, ok := loginRes["profile"].(map[string]interface{}); ok {
-		userData := profileData
-		if contactData, ok := profileData["contact"].(map[string]interface{}); ok {
-			userData = contactData
-		}
-		if id, ok := extractInt64(userData["id"]); ok {
-			c.Me.ID = id
-		}
-		if fn, ok := userData["firstName"].(string); ok {
-			c.Me.FirstName = fn
-		}
-		if ln, ok := userData["lastName"].(string); ok {
-			c.Me.LastName = ln
-		}
-		if ph, ok := userData["phone"].(string); ok {
-			c.Me.Phone = ph
-		}
-	} else if userMap, ok := loginRes["user"].(map[string]interface{}); ok {
-		if id, ok := extractInt64(userMap["id"]); ok {
-			c.Me.ID = id
-		}
-		if fn, ok := userMap["firstName"].(string); ok {
-			c.Me.FirstName = fn
-		}
+	}); err != nil {
+		return fmt.Errorf("save login session: %w", err)
 	}
 
-	log.Printf("[gomax] Login successful! Logged in as '%s' (ID: %d)", c.Me.FirstName, c.Me.ID)
+	// Resolve the initial state off-lock, then publish it atomically. Event
+	// delivery starts with the connection manager, so it may overlap the tail
+	// of login on a fast server.
+	me := &types.User{}
+	if profileData, ok := loginRes["profile"].(map[string]interface{}); ok {
+		parsed := types.ParseUserPayload(profileData)
+		parsed.Bind(c.Users)
+		me = &parsed
+	} else if userMap, ok := loginRes["user"].(map[string]interface{}); ok {
+		parsed := types.ParseUserPayload(userMap)
+		parsed.Bind(c.Users)
+		me = &parsed
+	}
+	for _, key := range []string{"contacts", "contactInfos"} {
+		if rawUsers, ok := loginRes[key].([]interface{}); ok {
+			parsed := make([]types.User, 0, len(rawUsers))
+			for _, raw := range rawUsers {
+				if m, ok := raw.(map[string]interface{}); ok {
+					user := types.ParseUserPayload(m)
+					user.Bind(c.Users)
+					parsed = append(parsed, user)
+				}
+			}
+			c.Users.SeedCache(parsed)
+		}
+	}
+	chatCache := make(map[int64]types.Chat)
+	if rawChats, ok := loginRes["chats"].([]interface{}); ok {
+		parsedChats := make([]types.Chat, 0, len(rawChats))
+		for _, raw := range rawChats {
+			if m, ok := raw.(map[string]interface{}); ok {
+				chat := types.ParseChatPayload(m)
+				chat.Bind(c.Messages, c.Chats)
+				chatCache[chat.ID] = chat
+				parsedChats = append(parsedChats, chat)
+			}
+		}
+		c.Chats.SeedCache(parsedChats)
+	}
+	messageCache := make(map[int64][]types.Message)
+	if rawMessages, ok := loginRes["messages"].(map[string]interface{}); ok {
+		for rawChatID, value := range rawMessages {
+			chatID, _ := types.Int64Value(rawChatID)
+			if list, ok := value.([]interface{}); ok {
+				for _, raw := range list {
+					if m, ok := raw.(map[string]interface{}); ok {
+						msg := types.ParseMessagePayload(m)
+						msg.Bind(c.Messages)
+						if msg.ChatID == 0 {
+							msg.ChatID = chatID
+						}
+						messageCache[chatID] = append(messageCache[chatID], *msg)
+					}
+				}
+			}
+		}
+	}
+	c.mu.Lock()
+	c.Me = me
+	c.ChatCache = chatCache
+	c.MessageCache = messageCache
+	c.mu.Unlock()
+
+	c.logf("Login successful! Logged in as '%s' (ID: %d)", me.FirstName, me.ID)
+	if c.cfg.Telemetry {
+		c.Telemetry.Start(ctx, clientSessionID)
+		defer c.Telemetry.Stop()
+	}
 
 	// Dispatch OnStart hooks
 	c.router.DispatchStart(ctx)
@@ -794,43 +1155,9 @@ func (c *Client) runSession(ctx context.Context) error {
 // parseMessage extracts a full types.Message from a raw payload map.
 // msgPayload may be the top-level frame payload or a nested "message" sub-object.
 func (c *Client) parseMessage(payload map[string]interface{}) *types.Message {
-	src := payload
-	if nested, ok := payload["message"].(map[string]interface{}); ok {
-		src = nested
-	}
-
-	msg := &types.Message{Time: time.Now().Unix()}
-
-	if id, ok := extractInt64(src["id"]); ok {
-		msg.ID = id
-	}
-	if cid, ok := extractInt64(src["cid"]); ok {
-		msg.CID = cid
-	}
-	if chatID, ok := extractInt64(src["chatId"]); ok {
-		msg.ChatID = chatID
-	}
-	if sender, ok := extractInt64(src["sender"]); ok {
-		msg.SenderID = sender
-	} else if sender, ok := extractInt64(src["senderId"]); ok {
-		msg.SenderID = sender
-	}
-	if text, ok := src["text"].(string); ok {
-		msg.Text = text
-	}
-	if ts, ok := src["time"].(float64); ok {
-		msg.Time = int64(ts)
-	} else if ts, ok := extractInt64(src["time"]); ok {
-		msg.Time = ts
-	}
-	if replyTo, ok := extractInt64(src["replyTo"]); ok {
-		msg.ReplyToMsgID = replyTo
-	}
-	if editedAt, ok := extractInt64(src["editedAt"]); ok {
-		msg.EditedAt = editedAt
-	}
-	if pinned, ok := src["isPinned"].(bool); ok {
-		msg.IsPinned = pinned
+	msg := types.ParseMessagePayload(payload).Bind(c.Messages)
+	if msg.Time == 0 {
+		msg.Time = time.Now().UnixMilli()
 	}
 
 	// Mark as outgoing if sender matches logged-in user
@@ -841,38 +1168,15 @@ func (c *Client) parseMessage(payload map[string]interface{}) *types.Message {
 		msg.IsOutgoing = true
 	}
 
-	// Parse attachments
-	if rawAttaches, ok := src["attaches"].([]interface{}); ok {
-		for _, item := range rawAttaches {
-			if aData, ok := item.(map[string]interface{}); ok {
-				attach := types.Attachment{}
-				if t, ok := aData["type"].(string); ok {
-					attach.Type = types.AttachmentType(t)
-				}
-				if url, ok := aData["url"].(string); ok {
-					attach.URL = url
-				}
-				if token, ok := aData["token"].(string); ok {
-					attach.Token = token
-				}
-				if id, ok := aData["id"].(string); ok {
-					attach.ID = id
-				}
-				if fname, ok := aData["fileName"].(string); ok {
-					attach.FileName = fname
-				}
-				if size, ok := aData["fileSize"].(float64); ok {
-					attach.FileSize = int64(size)
-				}
-				if dur, ok := aData["duration"].(float64); ok {
-					attach.Duration = int(dur)
-				}
-				msg.Attachments = append(msg.Attachments, attach)
-			}
-		}
-	}
-
 	return msg
+}
+
+func isInvalidLoginToken(err error) bool {
+	var apiErr *protocol.ApiError
+	if !errors.As(err, &apiErr) || apiErr.Opcode != protocol.OpLogin {
+		return false
+	}
+	return apiErr.ErrorStr == "FAIL_LOGIN_TOKEN" || apiErr.ErrorStr == "FAIL_LOGOUT_ALL" || apiErr.Message == "FAIL_LOGIN_TOKEN" || apiErr.Message == "FAIL_LOGOUT_ALL"
 }
 
 // handleEvent dispatches inbound server push frames to registered handlers.
@@ -881,37 +1185,35 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 	if ctx == nil {
 		return
 	}
+	defer c.router.DispatchEvent(ctx, &types.RawEvent{Type: frame.Opcode.String(), Opcode: uint16(frame.Opcode), Payload: frame.Payload})
 
 	switch frame.Opcode {
 	case protocol.OpNotifAttach:
 		c.Uploads.NotifyReady(frame.Payload)
-		c.router.DispatchEvent(ctx, &types.RawEvent{
-			Opcode: uint16(frame.Opcode), Payload: frame.Payload,
-		})
 
 	case protocol.OpNotifMark:
 		ev := &types.MessageReadEvent{}
+		ev.SetAsUnread, _ = frame.Payload["setAsUnread"].(bool)
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
 		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
 		ev.Mark, _ = extractInt64(frame.Payload["mark"])
 		c.router.DispatchMessageRead(ctx, ev)
 
 	case protocol.OpNotifContact:
-		src := frame.Payload
-		if contact, ok := frame.Payload["contact"].(map[string]interface{}); ok {
-			src = contact
-		}
-		user := types.User{}
-		user.ID, _ = extractInt64(src["id"])
-		user.FirstName, _ = src["firstName"].(string)
-		user.LastName, _ = src["lastName"].(string)
-		user.Phone, _ = src["phone"].(string)
+		user := types.ParseUserPayload(frame.Payload)
+		user.Bind(c.Users)
+		c.Users.SeedCache([]types.User{user})
 		c.router.DispatchUserUpdate(ctx, &types.UserUpdateEvent{User: user})
 
 	// Incoming new message
-	case protocol.OpMsgSend, protocol.OpNotifMessage:
+	case protocol.OpNotifMessage:
 		msg := c.parseMessage(frame.Payload)
-		if msg.ChatID != 0 || msg.ID != 0 {
+		if msg.Status == types.MessageStatusEdited {
+			c.router.DispatchMessageEdit(ctx, msg)
+		} else if msg.Status == types.MessageStatusRemoved {
+			c.router.DispatchMessageDeleteEvent(ctx, &types.MessageDeleteEvent{ChatID: msg.ChatID, MessageIDs: []int64{msg.ID}, Message: msg})
+		} else if msg.ChatID != 0 || msg.ID != 0 {
 			c.router.DispatchMessage(ctx, msg)
 		}
 
@@ -939,18 +1241,14 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 
 	// Single message deleted
 	case protocol.OpMsgDelete, protocol.OpNotifMsgDelete:
-		chatID, _ := extractInt64(frame.Payload["chatId"])
-		msgID, _ := extractInt64(frame.Payload["messageId"])
-		if msgID == 0 {
-			msgID, _ = extractInt64(frame.Payload["id"])
-		}
-		c.router.DispatchMessageDelete(ctx, chatID, msgID)
+		c.router.DispatchMessageDeleteEvent(ctx, types.ParseMessageDeletePayload(frame.Payload))
 
 	// Reaction changed on a message
-	case protocol.OpMsgReaction, protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
+	case protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
 		ev := &types.ReactionEvent{}
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
 		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
+		ev.MessageIDRaw = types.StringValue(frame.Payload["messageId"])
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
 		if rData, ok := frame.Payload["reaction"].(map[string]interface{}); ok {
 			if id, ok := rData["id"].(string); ok {
@@ -962,30 +1260,42 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 		if removed, ok := frame.Payload["removed"].(bool); ok {
 			ev.Removed = removed
 		}
+		if total, ok := extractInt64(frame.Payload["totalCount"]); ok {
+			ev.TotalCount = int(total)
+		}
+		if counters, ok := frame.Payload["counters"].([]interface{}); ok {
+			for _, item := range counters {
+				if m, ok := item.(map[string]interface{}); ok {
+					count, _ := extractInt64(m["count"])
+					ev.Counters = append(ev.Counters, types.ReactionCounter{Reaction: types.StringValue(m["reaction"]), Count: int(count)})
+				}
+			}
+		}
 		c.router.DispatchReaction(ctx, ev)
 
 	// Chat metadata updated
-	case protocol.OpChatUpdate, protocol.OpNotifChat:
-		chat := &types.Chat{}
-		src := frame.Payload
-		if cData, ok := frame.Payload["chat"].(map[string]interface{}); ok {
-			src = cData
+	case protocol.OpNotifChat:
+		chat := types.ParseChatPayload(frame.Payload)
+		chat.Bind(c.Messages, c.Chats)
+		if chat.ID != 0 {
+			c.mu.Lock()
+			c.ChatCache[chat.ID] = chat
+			c.mu.Unlock()
 		}
-		if id, ok := extractInt64(src["id"]); ok {
-			chat.ID = id
-		}
-		if title, ok := src["title"].(string); ok {
-			chat.Title = title
-		}
-		if isChannel, ok := src["isChannel"].(bool); ok {
-			chat.IsChannel = isChannel
-		}
-		c.router.DispatchChatUpdate(ctx, chat)
+		c.router.DispatchChatUpdate(ctx, &chat)
 
 	// User presence / online status changed
-	case protocol.OpContactPresence, protocol.OpNotifPresence:
+	case protocol.OpNotifPresence:
 		ev := &types.PresenceEvent{}
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if p, ok := frame.Payload["presence"].(map[string]interface{}); ok {
+			ev.Presence = &types.Presence{Status: types.StringValue(p["status"])}
+			ev.Presence.StatusCode, _ = extractInt64(p["status"])
+			ev.Presence.Seen, _ = extractInt64(p["seen"])
+			ev.Presence.LastSeen, _ = extractInt64(p["lastSeen"])
+			ev.Presence.Online, _ = p["online"].(bool)
+			ev.Online = ev.Presence.Online || ev.Presence.Status == "online" || ev.Presence.Status == "ONLINE"
+		}
 		if online, ok := frame.Payload["online"].(bool); ok {
 			ev.Online = online
 		} else if status, ok := frame.Payload["status"].(string); ok {
@@ -994,7 +1304,7 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 		c.router.DispatchPresence(ctx, ev)
 
 	// User typing indicator
-	case protocol.OpMsgTyping, protocol.OpNotifTyping:
+	case protocol.OpNotifTyping:
 		ev := &types.TypingEvent{}
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
@@ -1005,29 +1315,35 @@ func (c *Client) handleEvent(frame *protocol.InboundFrame) {
 
 	// Any other server push event — route as raw
 	default:
-		if frame.Cmd == protocol.CmdEvent {
-			c.router.DispatchEvent(ctx, &types.RawEvent{
-				Opcode:  uint16(frame.Opcode),
-				Payload: frame.Payload,
-			})
-		}
 	}
 }
 
 // Close disconnects and terminates client session.
 func (c *Client) Close() error {
+	if c.Telemetry != nil {
+		c.Telemetry.Stop()
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if !c.started {
+		c.mu.Unlock()
 		return nil
 	}
 	c.started = false
-	if c.cancel != nil {
-		c.cancel()
+	cancel, conn := c.cancel, c.conn
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if c.conn != nil {
-		return c.conn.Close()
+	var errs []error
+	if conn != nil {
+		if err := conn.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	if store, ok := c.store.(session.ExtendedStore); ok {
+		if err := store.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

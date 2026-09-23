@@ -31,6 +31,7 @@ type WSOptions struct {
 	HandshakeTimeout time.Duration
 	CloseTimeout     time.Duration
 	MaxMessageSize   int64
+	TextFrames       bool
 }
 
 // DefaultWSOptions returns standard production options for Max WebSocket transport.
@@ -179,7 +180,11 @@ func (w *WebSocketTransport) Send(data []byte) error {
 		return ErrNotConnected
 	}
 
-	err := conn.WriteMessage(websocket.BinaryMessage, data)
+	messageType := websocket.BinaryMessage
+	if w.opts.TextFrames {
+		messageType = websocket.TextMessage
+	}
+	err := conn.WriteMessage(messageType, data)
 	if err != nil {
 		w.markClosed()
 		return fmt.Errorf("ws send: %w", err)

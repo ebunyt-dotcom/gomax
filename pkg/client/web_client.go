@@ -12,6 +12,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/api/chats"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/messages"
 	selfapi "github.com/ebunyt-dotcom/gomax/pkg/api/selfapi"
+	sessionapi "github.com/ebunyt-dotcom/gomax/pkg/api/sessionapi"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/uploads"
 	"github.com/ebunyt-dotcom/gomax/pkg/api/users"
 	"github.com/ebunyt-dotcom/gomax/pkg/auth"
@@ -19,6 +20,7 @@ import (
 	"github.com/ebunyt-dotcom/gomax/pkg/dispatch"
 	"github.com/ebunyt-dotcom/gomax/pkg/protocol"
 	"github.com/ebunyt-dotcom/gomax/pkg/session"
+	"github.com/ebunyt-dotcom/gomax/pkg/telemetry"
 	"github.com/ebunyt-dotcom/gomax/pkg/transport"
 	"github.com/ebunyt-dotcom/gomax/pkg/types"
 )
@@ -30,19 +32,23 @@ type WebClient struct {
 	store  session.Store
 	router *dispatch.Router
 
-	Messages *messages.MessageService
-	Auth     *authapi.AuthService
-	Chats    *chats.ChatService
-	Users    *users.UserService
-	Uploads  *uploads.UploadService
-	Bots     *bots.BotsService
-	Self     *selfapi.SelfService
+	Messages  *messages.MessageService
+	Auth      *authapi.AuthService
+	Chats     *chats.ChatService
+	Users     *users.UserService
+	Uploads   *uploads.UploadService
+	Bots      *bots.BotsService
+	Self      *selfapi.SelfService
+	Session   *sessionapi.Service
+	Telemetry *telemetry.Service
 
-	Me      *types.User
-	mu      sync.RWMutex
-	started bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	Me           *types.User
+	ChatCache    map[int64]types.Chat
+	MessageCache map[int64][]types.Message
+	mu           sync.RWMutex
+	started      bool
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewWebClient creates a WebClient matching pymax.WebClient.
@@ -55,34 +61,62 @@ func NewWebClient(cfg *Config) *WebClient {
 	}
 	applyDefaults(cfg, true)
 	var store session.Store
-	if cfg.Store != nil {
-		store = cfg.Store
-	} else if cfg.PersistSession {
-		store = session.NewFileStore(cfg.WorkDir, cfg.SessionName)
-	} else {
+	if !cfg.PersistSession {
 		store = session.NewInMemoryStore()
+	} else if cfg.Store != nil {
+		store = cfg.Store
+	} else {
+		store = session.NewFileStore(cfg.WorkDir, cfg.SessionName)
 	}
 
 	wc := &WebClient{
-		cfg:    cfg,
-		store:  store,
-		router: dispatch.NewRouter(),
+		cfg:          cfg,
+		store:        store,
+		router:       dispatch.NewRouter(),
+		ChatCache:    make(map[int64]types.Chat),
+		MessageCache: make(map[int64][]types.Message),
 	}
 
 	wc.Messages = messages.NewMessageService(wc)
 	wc.Auth = authapi.NewAuthService(wc)
 	wc.Chats = chats.NewChatService(wc)
 	wc.Users = users.NewUserService(wc)
-	wc.Uploads = uploads.NewUploadService(wc)
+	wc.Chats.SetMessageActions(wc.Messages)
+	wc.Uploads = uploads.NewUploadServiceWithOptions(wc, uploads.Options{
+		Timeout: cfg.UploadTimeout, ProxyURL: cfg.Proxy,
+		UserAgent: fmt.Sprintf("OKMessages/%s (%s; %s; %s)", cfg.AppVersion, cfg.OSVersion, cfg.DeviceName, cfg.Screen),
+	})
+	wc.Messages.SetAttachmentReadyWaiter(wc.Uploads.WaitForMessageAttachments)
 	wc.Bots = bots.NewBotsService(wc)
 	wc.Self = selfapi.NewSelfService(wc)
+	wc.Self.SetUserActions(wc.Users)
+	wc.Session = sessionapi.NewService(wc)
+	wc.Telemetry = telemetry.NewService(wc, wc.telemetrySnapshot)
+	wc.Self.SetSessionHooks(
+		func(_ string, newToken string) error { return updateStoredToken(wc.store, wc.cfg, newToken) },
+		func(hash string) error { return updateStoredConfigHash(wc.store, hash) },
+	)
 
 	return wc
 }
 
+func (wc *WebClient) telemetrySnapshot() telemetry.Snapshot {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+	chats := make([]types.Chat, 0, len(wc.ChatCache))
+	for _, chat := range wc.ChatCache {
+		chats = append(chats, chat)
+	}
+	userID := int64(0)
+	if wc.Me != nil {
+		userID = wc.Me.ID
+	}
+	return telemetry.Snapshot{Ready: wc.started && wc.conn != nil && wc.conn.IsOpen() && wc.Me != nil, UserID: userID, Chats: chats}
+}
+
 // OnMessage registers an incoming message listener.
-func (wc *WebClient) OnMessage(handler func(ctx context.Context, msg *types.Message) error) {
-	wc.router.OnMessage(handler)
+func (wc *WebClient) OnMessage(handler func(ctx context.Context, msg *types.Message) error, filters ...dispatch.MessagePredicate) {
+	wc.router.OnMessage(handler, filters...)
 }
 
 // OnStart registers an on_start listener.
@@ -91,8 +125,8 @@ func (wc *WebClient) OnStart(handler func(ctx context.Context) error) {
 }
 
 // OnMessageEdit registers a handler for message edit events.
-func (wc *WebClient) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error) {
-	wc.router.OnMessageEdit(handler)
+func (wc *WebClient) OnMessageEdit(handler func(ctx context.Context, msg *types.Message) error, filters ...dispatch.MessagePredicate) {
+	wc.router.OnMessageEdit(handler, filters...)
 }
 
 // OnMessageDelete registers a handler for message delete events.
@@ -100,34 +134,38 @@ func (wc *WebClient) OnMessageDelete(handler func(ctx context.Context, chatID, m
 	wc.router.OnMessageDelete(handler)
 }
 
+func (wc *WebClient) OnMessageDeleteEvent(handler func(ctx context.Context, ev *types.MessageDeleteEvent) error, filters ...dispatch.MessageDeletePredicate) {
+	wc.router.OnMessageDeleteEvent(handler, filters...)
+}
+
 // OnMessageRead registers a read-marker handler.
-func (wc *WebClient) OnMessageRead(handler func(ctx context.Context, ev *types.MessageReadEvent) error) {
-	wc.router.OnMessageRead(handler)
+func (wc *WebClient) OnMessageRead(handler func(ctx context.Context, ev *types.MessageReadEvent) error, filters ...dispatch.MessageReadPredicate) {
+	wc.router.OnMessageRead(handler, filters...)
 }
 
 // OnUserUpdate registers a contact/profile update handler.
-func (wc *WebClient) OnUserUpdate(handler func(ctx context.Context, ev *types.UserUpdateEvent) error) {
-	wc.router.OnUserUpdate(handler)
+func (wc *WebClient) OnUserUpdate(handler func(ctx context.Context, ev *types.UserUpdateEvent) error, filters ...dispatch.UserUpdatePredicate) {
+	wc.router.OnUserUpdate(handler, filters...)
 }
 
 // OnReaction registers a handler for reaction add/remove events.
-func (wc *WebClient) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error) {
-	wc.router.OnReaction(handler)
+func (wc *WebClient) OnReaction(handler func(ctx context.Context, ev *types.ReactionEvent) error, filters ...dispatch.ReactionPredicate) {
+	wc.router.OnReaction(handler, filters...)
 }
 
 // OnChatUpdate registers a handler for chat metadata update events.
-func (wc *WebClient) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error) {
-	wc.router.OnChatUpdate(handler)
+func (wc *WebClient) OnChatUpdate(handler func(ctx context.Context, chat *types.Chat) error, filters ...dispatch.ChatUpdatePredicate) {
+	wc.router.OnChatUpdate(handler, filters...)
 }
 
 // OnPresence registers a handler for user online/offline status events.
-func (wc *WebClient) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error) {
-	wc.router.OnPresence(handler)
+func (wc *WebClient) OnPresence(handler func(ctx context.Context, ev *types.PresenceEvent) error, filters ...dispatch.PresencePredicate) {
+	wc.router.OnPresence(handler, filters...)
 }
 
 // OnTyping registers a handler for user typing indicator events.
-func (wc *WebClient) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error) {
-	wc.router.OnTyping(handler)
+func (wc *WebClient) OnTyping(handler func(ctx context.Context, ev *types.TypingEvent) error, filters ...dispatch.TypingPredicate) {
+	wc.router.OnTyping(handler, filters...)
 }
 
 // OnDisconnect registers a handler called when the client disconnects.
@@ -137,8 +175,39 @@ func (wc *WebClient) OnDisconnect(handler func(ctx context.Context, err error)) 
 
 // OnRaw registers a handler for low-level event frames not consumed by a
 // typed event handler.
-func (wc *WebClient) OnRaw(handler func(ctx context.Context, event *types.RawEvent) error) {
-	wc.router.OnEvent(handler)
+func (wc *WebClient) OnRaw(handler func(ctx context.Context, event *types.RawEvent) error, filters ...dispatch.EventPredicate) {
+	wc.router.OnEvent(handler, filters...)
+}
+
+func (wc *WebClient) OnError(handler func(ctx context.Context, err error)) {
+	wc.router.OnError(handler)
+}
+func (wc *WebClient) OnErrorScoped(scope dispatch.ErrorScope, handler func(context.Context, error)) {
+	wc.router.OnErrorScoped(scope, handler)
+}
+func (wc *WebClient) IncludeRouter(router *dispatch.Router) { wc.router.Include(router) }
+
+func (wc *WebClient) Connect(ctx context.Context) error { return wc.Start(ctx) }
+func (wc *WebClient) Stop() error                       { return wc.Close() }
+func (wc *WebClient) IsConnected() bool {
+	wc.mu.RLock()
+	conn := wc.conn
+	wc.mu.RUnlock()
+	return conn != nil && conn.IsOpen()
+}
+func (wc *WebClient) Relogin(ctx context.Context) error {
+	if err := clearStoredSessionToken(wc.store); err != nil {
+		return err
+	}
+	wc.cfg.Token = ""
+	wc.mu.RLock()
+	conn, started := wc.conn, wc.started
+	wc.mu.RUnlock()
+	if started && conn != nil {
+		conn.Fail(errors.New("relogin requested"))
+		return nil
+	}
+	return wc.Start(ctx)
 }
 
 // SetInteractive changes the interactive/presence flag used by the next
@@ -165,7 +234,7 @@ func (wc *WebClient) Invoke(ctx context.Context, op protocol.Opcode, payload int
 	}
 
 	if inbound.Cmd == protocol.CmdError {
-		return nil, fmt.Errorf("api error from server on opcode %s: %v", inbound.Opcode, inbound.Payload)
+		return nil, protocol.NewApiError(inbound)
 	}
 
 	return inbound.Payload, nil
@@ -193,6 +262,11 @@ func (wc *WebClient) Start(ctx context.Context) error {
 			return nil
 		}
 
+		if wc.cfg.Relogin && isInvalidLoginToken(err) {
+			_ = clearStoredSessionToken(wc.store)
+			wc.cfg.Token = ""
+			continue
+		}
 		if !wc.cfg.Reconnect {
 			return err
 		}
@@ -214,10 +288,11 @@ func (wc *WebClient) Start(ctx context.Context) error {
 func (wc *WebClient) runSession(ctx context.Context) error {
 	wsOpts := transport.DefaultWSOptions(wc.cfg.URL)
 	wsOpts.ProxyURL = wc.cfg.Proxy
+	wsOpts.TextFrames = true
 	wsTransport := transport.NewWebSocketTransport(wsOpts)
 	wsReader := connection.NewWSReader(wsTransport)
 
-	wsProto, err := protocol.NewWsProtocol(true)
+	wsProto, err := protocol.NewWsProtocol(false)
 	if err != nil {
 		return fmt.Errorf("init ws protocol failed: %w", err)
 	}
@@ -261,6 +336,9 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 	if wc.cfg.DeviceID == "" && sessInfo != nil && sessInfo.DeviceID != "" {
 		wc.cfg.DeviceID = sessInfo.DeviceID
 	}
+	if sessInfo != nil {
+		restoreSessionUserAgent(wc.cfg, sessInfo.UserAgent)
+	}
 	if wc.cfg.DeviceID == "" {
 		wc.cfg.DeviceID = randomHex(8)
 	}
@@ -294,10 +372,12 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 			return fmt.Errorf("qr authentication failed: %w", err)
 		}
 		token = authRes.Token
-		_ = wc.store.SaveSession(&session.SessionInfo{
-			Token:    token,
-			DeviceID: wc.cfg.DeviceID,
-		})
+		if err := wc.store.SaveSession(&session.SessionInfo{
+			Token: token, DeviceID: wc.cfg.DeviceID, UserAgent: sessionUserAgent(wc.cfg),
+		}); err != nil {
+			_ = connManager.Close()
+			return fmt.Errorf("save authenticated web session: %w", err)
+		}
 	}
 
 	webSync := session.SyncState{
@@ -310,6 +390,7 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 			webSync.ConfigHash = session.DefaultConfigHash
 		}
 	}
+	webSync = resolveSync(webSync, wc.cfg.Sync)
 
 	// 3. Login. Keep this payload equivalent to PyMax's WebSyncPayload.
 	loginRes, err := wc.Invoke(ctx, protocol.OpLogin, map[string]interface{}{
@@ -325,6 +406,34 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 		_ = connManager.Close()
 		return fmt.Errorf("web login failed: %w", err)
 	}
+	if flags, ok := loginRes["login2Flags"].(map[string]interface{}); ok {
+		configEnabled, _ := flags["configEnabled"].(bool)
+		contactEnabled, _ := flags["contactEnabled"].(bool)
+		profileEnabled, _ := flags["profileEnabled"].(bool)
+		if configEnabled || contactEnabled || profileEnabled {
+			contactsSync := int64(-1)
+			if contactEnabled {
+				contactsSync = webSync.ContactsSync
+			}
+			login2Res, login2Err := wc.Invoke(ctx, protocol.OpLogin2, map[string]interface{}{"needProfile": profileEnabled, "contactsSync": contactsSync, "configHash": webSync.ConfigHash})
+			if login2Err != nil {
+				_ = connManager.Close()
+				return fmt.Errorf("web login2 failed: %w", login2Err)
+			}
+			for key, value := range login2Res {
+				loginRes[key] = value
+			}
+		}
+	}
+	if newToken, ok := loginRes["token"].(string); ok && newToken != "" && newToken != token {
+		oldToken := token
+		token = newToken
+		if err := wc.store.UpdateToken(oldToken, token); err != nil {
+			_ = connManager.Close()
+			return fmt.Errorf("persist refreshed web token: %w", err)
+		}
+	}
+	wc.cfg.Token = token
 	if syncTime, ok := extractInt64(loginRes["time"]); ok {
 		webSync.ChatsSync = syncTime
 		webSync.ContactsSync = syncTime
@@ -332,26 +441,81 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 		webSync.PresenceSync = syncTime
 	}
 	if config, ok := loginRes["config"].(map[string]interface{}); ok {
-		if hash, ok := config["hash"].(string); ok && hash != "" {
+		if hash := types.StringValue(config["hash"]); hash != "" {
 			webSync.ConfigHash = hash
 		}
 	}
-	_ = wc.store.SaveSession(&session.SessionInfo{
-		Token: token, DeviceID: wc.cfg.DeviceID, Sync: webSync,
-	})
+	if err := wc.store.SaveSession(&session.SessionInfo{
+		Token: token, DeviceID: wc.cfg.DeviceID, Sync: webSync, UserAgent: sessionUserAgent(wc.cfg),
+	}); err != nil {
+		return fmt.Errorf("save web session: %w", err)
+	}
 
-	wc.Me = &types.User{}
+	me := &types.User{}
 	if profileData, ok := loginRes["profile"].(map[string]interface{}); ok {
-		src := profileData
-		if contact, ok := profileData["contact"].(map[string]interface{}); ok {
-			src = contact
+		parsed := types.ParseUserPayload(profileData)
+		parsed.Bind(wc.Users)
+		me = &parsed
+	} else if userData, ok := loginRes["user"].(map[string]interface{}); ok {
+		parsed := types.ParseUserPayload(userData)
+		parsed.Bind(wc.Users)
+		me = &parsed
+	}
+	for _, key := range []string{"contacts", "contactInfos"} {
+		if rawUsers, ok := loginRes[key].([]interface{}); ok {
+			parsed := make([]types.User, 0, len(rawUsers))
+			for _, raw := range rawUsers {
+				if m, ok := raw.(map[string]interface{}); ok {
+					user := types.ParseUserPayload(m)
+					user.Bind(wc.Users)
+					parsed = append(parsed, user)
+				}
+			}
+			wc.Users.SeedCache(parsed)
 		}
-		if id, ok := extractInt64(src["id"]); ok {
-			wc.Me.ID = id
+	}
+	chatCache := make(map[int64]types.Chat)
+	if rawChats, ok := loginRes["chats"].([]interface{}); ok {
+		parsedChats := make([]types.Chat, 0, len(rawChats))
+		for _, raw := range rawChats {
+			if m, ok := raw.(map[string]interface{}); ok {
+				chat := types.ParseChatPayload(m)
+				chat.Bind(wc.Messages, wc.Chats)
+				chatCache[chat.ID] = chat
+				parsedChats = append(parsedChats, chat)
+			}
 		}
-		if fn, ok := src["firstName"].(string); ok {
-			wc.Me.FirstName = fn
+		wc.Chats.SeedCache(parsedChats)
+	}
+	messageCache := make(map[int64][]types.Message)
+	if rawMessages, ok := loginRes["messages"].(map[string]interface{}); ok {
+		for rawChatID, value := range rawMessages {
+			chatID, _ := types.Int64Value(rawChatID)
+			if list, ok := value.([]interface{}); ok {
+				for _, raw := range list {
+					if m, ok := raw.(map[string]interface{}); ok {
+						msg := types.ParseMessagePayload(m)
+						msg.Bind(wc.Messages)
+						if msg.ChatID == 0 {
+							msg.ChatID = chatID
+						}
+						messageCache[chatID] = append(messageCache[chatID], *msg)
+					}
+				}
+			}
 		}
+	}
+	wc.mu.Lock()
+	wc.Me = me
+	wc.ChatCache = chatCache
+	wc.MessageCache = messageCache
+	wc.mu.Unlock()
+	if wc.cfg.ClientSessionID <= 0 {
+		wc.cfg.ClientSessionID = randomClientSessionID()
+	}
+	if wc.cfg.Telemetry {
+		wc.Telemetry.Start(ctx, wc.cfg.ClientSessionID)
+		defer wc.Telemetry.Stop()
 	}
 
 	wc.router.DispatchStart(ctx)
@@ -369,47 +533,31 @@ func (wc *WebClient) runSession(ctx context.Context) error {
 }
 
 func defaultWebUserAgent(cfg *Config) map[string]interface{} {
-	userAgent := mobileUserAgent(cfg)
-	delete(userAgent, "buildNumber")
-	delete(userAgent, "arch")
-	delete(userAgent, "pushDeviceType")
-	userAgent["headerUserAgent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+	// PyMax's MobileUserAgentPayload.to_web_payload selects only the web
+	// aliases and never mutates the caller's model. Copy the values here so a
+	// caller-provided Config.UserAgent remains reusable for later handshakes.
+	const defaultHeader = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+	source := mobileUserAgent(cfg)
+	userAgent := make(map[string]interface{}, 9)
+	for _, key := range []string{
+		"deviceType", "locale", "deviceLocale", "osVersion", "deviceName",
+		"headerUserAgent", "appVersion", "screen", "timezone",
+	} {
+		if value, ok := source[key]; ok {
+			userAgent[key] = value
+		}
+	}
+	if value, ok := userAgent["headerUserAgent"].(string); !ok || value == "" {
+		userAgent["headerUserAgent"] = defaultHeader
+	}
 	return userAgent
 }
 
 // parseMessage extracts a full types.Message from a raw payload map for WebClient.
 func (wc *WebClient) parseMessage(payload map[string]interface{}) *types.Message {
-	src := payload
-	if nested, ok := payload["message"].(map[string]interface{}); ok {
-		src = nested
-	}
-
-	msg := &types.Message{Time: time.Now().Unix()}
-
-	if id, ok := extractInt64(src["id"]); ok {
-		msg.ID = id
-	}
-	if cid, ok := extractInt64(src["cid"]); ok {
-		msg.CID = cid
-	}
-	if chatID, ok := extractInt64(src["chatId"]); ok {
-		msg.ChatID = chatID
-	}
-	if sender, ok := extractInt64(src["sender"]); ok {
-		msg.SenderID = sender
-	} else if sender, ok := extractInt64(src["senderId"]); ok {
-		msg.SenderID = sender
-	}
-	if text, ok := src["text"].(string); ok {
-		msg.Text = text
-	}
-	if ts, ok := src["time"].(float64); ok {
-		msg.Time = int64(ts)
-	} else if ts, ok := extractInt64(src["time"]); ok {
-		msg.Time = ts
-	}
-	if replyTo, ok := extractInt64(src["replyTo"]); ok {
-		msg.ReplyToMsgID = replyTo
+	msg := types.ParseMessagePayload(payload).Bind(wc.Messages)
+	if msg.Time == 0 {
+		msg.Time = time.Now().UnixMilli()
 	}
 
 	wc.mu.RLock()
@@ -417,37 +565,6 @@ func (wc *WebClient) parseMessage(payload map[string]interface{}) *types.Message
 	wc.mu.RUnlock()
 	if me != nil && msg.SenderID != 0 && msg.SenderID == me.ID {
 		msg.IsOutgoing = true
-	}
-
-	// Parse attachments
-	if rawAttaches, ok := src["attaches"].([]interface{}); ok {
-		for _, item := range rawAttaches {
-			if aData, ok := item.(map[string]interface{}); ok {
-				attach := types.Attachment{}
-				if t, ok := aData["type"].(string); ok {
-					attach.Type = types.AttachmentType(t)
-				}
-				if url, ok := aData["url"].(string); ok {
-					attach.URL = url
-				}
-				if token, ok := aData["token"].(string); ok {
-					attach.Token = token
-				}
-				if id, ok := aData["id"].(string); ok {
-					attach.ID = id
-				}
-				if fname, ok := aData["fileName"].(string); ok {
-					attach.FileName = fname
-				}
-				if size, ok := aData["fileSize"].(float64); ok {
-					attach.FileSize = int64(size)
-				}
-				if dur, ok := aData["duration"].(float64); ok {
-					attach.Duration = int(dur)
-				}
-				msg.Attachments = append(msg.Attachments, attach)
-			}
-		}
 	}
 
 	return msg
@@ -459,36 +576,34 @@ func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
 	if ctx == nil {
 		return
 	}
+	defer wc.router.DispatchEvent(ctx, &types.RawEvent{Type: frame.Opcode.String(), Opcode: uint16(frame.Opcode), Payload: frame.Payload})
 
 	switch frame.Opcode {
 	case protocol.OpNotifAttach:
 		wc.Uploads.NotifyReady(frame.Payload)
-		wc.router.DispatchEvent(ctx, &types.RawEvent{
-			Opcode: uint16(frame.Opcode), Payload: frame.Payload,
-		})
 
 	case protocol.OpNotifMark:
 		ev := &types.MessageReadEvent{}
+		ev.SetAsUnread, _ = frame.Payload["setAsUnread"].(bool)
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
+		ev.UserID, _ = extractInt64(frame.Payload["userId"])
 		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
 		ev.Mark, _ = extractInt64(frame.Payload["mark"])
 		wc.router.DispatchMessageRead(ctx, ev)
 
 	case protocol.OpNotifContact:
-		src := frame.Payload
-		if contact, ok := frame.Payload["contact"].(map[string]interface{}); ok {
-			src = contact
-		}
-		user := types.User{}
-		user.ID, _ = extractInt64(src["id"])
-		user.FirstName, _ = src["firstName"].(string)
-		user.LastName, _ = src["lastName"].(string)
-		user.Phone, _ = src["phone"].(string)
+		user := types.ParseUserPayload(frame.Payload)
+		user.Bind(wc.Users)
+		wc.Users.SeedCache([]types.User{user})
 		wc.router.DispatchUserUpdate(ctx, &types.UserUpdateEvent{User: user})
 
-	case protocol.OpMsgSend, protocol.OpNotifMessage:
+	case protocol.OpNotifMessage:
 		msg := wc.parseMessage(frame.Payload)
-		if msg.ChatID != 0 || msg.ID != 0 {
+		if msg.Status == types.MessageStatusEdited {
+			wc.router.DispatchMessageEdit(ctx, msg)
+		} else if msg.Status == types.MessageStatusRemoved {
+			wc.router.DispatchMessageDeleteEvent(ctx, &types.MessageDeleteEvent{ChatID: msg.ChatID, MessageIDs: []int64{msg.ID}, Message: msg})
+		} else if msg.ChatID != 0 || msg.ID != 0 {
 			wc.router.DispatchMessage(ctx, msg)
 		}
 
@@ -512,17 +627,13 @@ func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
 		wc.router.DispatchMessageEdit(ctx, msg)
 
 	case protocol.OpMsgDelete, protocol.OpNotifMsgDelete:
-		chatID, _ := extractInt64(frame.Payload["chatId"])
-		msgID, _ := extractInt64(frame.Payload["messageId"])
-		if msgID == 0 {
-			msgID, _ = extractInt64(frame.Payload["id"])
-		}
-		wc.router.DispatchMessageDelete(ctx, chatID, msgID)
+		wc.router.DispatchMessageDeleteEvent(ctx, types.ParseMessageDeletePayload(frame.Payload))
 
-	case protocol.OpMsgReaction, protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
+	case protocol.OpNotifMsgReactionsChanged, protocol.OpNotifMsgYouReacted:
 		ev := &types.ReactionEvent{}
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
 		ev.MessageID, _ = extractInt64(frame.Payload["messageId"])
+		ev.MessageIDRaw = types.StringValue(frame.Payload["messageId"])
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
 		if rData, ok := frame.Payload["reaction"].(map[string]interface{}); ok {
 			if id, ok := rData["id"].(string); ok {
@@ -534,28 +645,40 @@ func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
 		if removed, ok := frame.Payload["removed"].(bool); ok {
 			ev.Removed = removed
 		}
+		if total, ok := extractInt64(frame.Payload["totalCount"]); ok {
+			ev.TotalCount = int(total)
+		}
+		if counters, ok := frame.Payload["counters"].([]interface{}); ok {
+			for _, item := range counters {
+				if m, ok := item.(map[string]interface{}); ok {
+					count, _ := extractInt64(m["count"])
+					ev.Counters = append(ev.Counters, types.ReactionCounter{Reaction: types.StringValue(m["reaction"]), Count: int(count)})
+				}
+			}
+		}
 		wc.router.DispatchReaction(ctx, ev)
 
-	case protocol.OpChatUpdate, protocol.OpNotifChat:
-		chat := &types.Chat{}
-		src := frame.Payload
-		if cData, ok := frame.Payload["chat"].(map[string]interface{}); ok {
-			src = cData
+	case protocol.OpNotifChat:
+		chat := types.ParseChatPayload(frame.Payload)
+		chat.Bind(wc.Messages, wc.Chats)
+		if chat.ID != 0 {
+			wc.mu.Lock()
+			wc.ChatCache[chat.ID] = chat
+			wc.mu.Unlock()
 		}
-		if id, ok := extractInt64(src["id"]); ok {
-			chat.ID = id
-		}
-		if title, ok := src["title"].(string); ok {
-			chat.Title = title
-		}
-		if isChannel, ok := src["isChannel"].(bool); ok {
-			chat.IsChannel = isChannel
-		}
-		wc.router.DispatchChatUpdate(ctx, chat)
+		wc.router.DispatchChatUpdate(ctx, &chat)
 
-	case protocol.OpContactPresence, protocol.OpNotifPresence:
+	case protocol.OpNotifPresence:
 		ev := &types.PresenceEvent{}
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
+		if p, ok := frame.Payload["presence"].(map[string]interface{}); ok {
+			ev.Presence = &types.Presence{Status: types.StringValue(p["status"])}
+			ev.Presence.StatusCode, _ = extractInt64(p["status"])
+			ev.Presence.Seen, _ = extractInt64(p["seen"])
+			ev.Presence.LastSeen, _ = extractInt64(p["lastSeen"])
+			ev.Presence.Online, _ = p["online"].(bool)
+			ev.Online = ev.Presence.Online || ev.Presence.Status == "online" || ev.Presence.Status == "ONLINE"
+		}
 		if online, ok := frame.Payload["online"].(bool); ok {
 			ev.Online = online
 		} else if status, ok := frame.Payload["status"].(string); ok {
@@ -563,7 +686,7 @@ func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
 		}
 		wc.router.DispatchPresence(ctx, ev)
 
-	case protocol.OpMsgTyping, protocol.OpNotifTyping:
+	case protocol.OpNotifTyping:
 		ev := &types.TypingEvent{}
 		ev.ChatID, _ = extractInt64(frame.Payload["chatId"])
 		ev.UserID, _ = extractInt64(frame.Payload["userId"])
@@ -573,29 +696,35 @@ func (wc *WebClient) handleEvent(frame *protocol.InboundFrame) {
 		wc.router.DispatchTyping(ctx, ev)
 
 	default:
-		if frame.Cmd == protocol.CmdEvent {
-			wc.router.DispatchEvent(ctx, &types.RawEvent{
-				Opcode:  uint16(frame.Opcode),
-				Payload: frame.Payload,
-			})
-		}
 	}
 }
 
 // Close disconnects the WebSocket client.
 func (wc *WebClient) Close() error {
+	if wc.Telemetry != nil {
+		wc.Telemetry.Stop()
+	}
 	wc.mu.Lock()
-	defer wc.mu.Unlock()
-
 	if !wc.started {
+		wc.mu.Unlock()
 		return nil
 	}
 	wc.started = false
-	if wc.cancel != nil {
-		wc.cancel()
+	cancel, conn := wc.cancel, wc.conn
+	wc.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if wc.conn != nil {
-		return wc.conn.Close()
+	var errs []error
+	if conn != nil {
+		if err := conn.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	if store, ok := wc.store.(session.ExtendedStore); ok {
+		if err := store.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

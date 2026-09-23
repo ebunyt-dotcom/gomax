@@ -46,7 +46,8 @@ func NewQrAuthFlow(handler QrHandler, passwordProvider PasswordProvider) *QrAuth
 
 Константы вложений: `AttachmentPhoto`, `AttachmentVideo`, `AttachmentAudio`,
 `AttachmentFile`, `AttachmentVoice`, `AttachmentVideoNote`, `AttachmentPoll`,
-`AttachmentSticker`.
+`AttachmentSticker`, `AttachmentContact`, `AttachmentCall`, `AttachmentControl`,
+`AttachmentKeyboard`, `AttachmentShare`, `AttachmentUnknown`.
 
 Константы чатов: `ChatTypeDialog`, `ChatTypeChat`, `ChatTypeChannel`.
 
@@ -61,7 +62,11 @@ func NewQrAuthFlow(handler QrHandler, passwordProvider PasswordProvider) *QrAuth
 
 ```go
 func (c *Client) Start(ctx context.Context) error
+func (c *Client) Connect(ctx context.Context) error
 func (c *Client) Close() error
+func (c *Client) Stop() error
+func (c *Client) IsConnected() bool
+func (c *Client) Relogin(ctx context.Context) error
 func (c *Client) SetInteractive(online bool)
 func (c *Client) Invoke(ctx context.Context, op protocol.Opcode, payload interface{}) (map[string]interface{}, error)
 func (c *Client) CallsSeed() int64
@@ -90,7 +95,11 @@ func (e *NonRecoverableError) Unwrap() error
 
 ```go
 func (c *WebClient) Start(ctx context.Context) error
+func (c *WebClient) Connect(ctx context.Context) error
 func (c *WebClient) Close() error
+func (c *WebClient) Stop() error
+func (c *WebClient) IsConnected() bool
+func (c *WebClient) Relogin(ctx context.Context) error
 func (c *WebClient) SetInteractive(online bool)
 func (c *WebClient) Invoke(ctx context.Context, op protocol.Opcode, payload interface{}) (map[string]interface{}, error)
 ```
@@ -112,10 +121,51 @@ func (c *Client) OnPresence(handler func(context.Context, *types.PresenceEvent) 
 func (c *Client) OnTyping(handler func(context.Context, *types.TypingEvent) error)
 func (c *Client) OnDisconnect(handler func(context.Context, error))
 func (c *Client) OnRaw(handler func(context.Context, *types.RawEvent) error)
+func (c *Client) OnError(handler func(context.Context, error))
+func (c *Client) OnErrorScoped(scope dispatch.ErrorScope, handler func(context.Context, error))
+func (c *Client) IncludeRouter(router *dispatch.Router)
 ```
 
 У `WebClient` сигнатуры те же, меняется только получатель `*WebClient`.
+Все typed-регистрации и `OnRaw` дополнительно принимают variadic predicate-фильтры.
 Подробные примеры: [события](../dispatch/events.md).
+
+## Методы полученных объектов
+
+Возвращаемые сервисами `Message`, `Chat` и `User` автоматически привязаны к
+своим сервисам и поддерживают PyMax-подобные операции:
+
+```go
+message.Reply(ctx, text, attachments, options...)
+message.Answer(ctx, text, attachments, options...)
+message.Forward(ctx, targetChatID, notify)
+message.Pin(ctx, notify)
+message.Edit(ctx, text, attachments)
+message.Delete(ctx, forMe)
+message.Read(ctx)
+message.React(ctx, reaction)
+message.Unreact(ctx)
+message.GetReactions(ctx)
+
+chat.Answer(ctx, text, attachments, options...)
+chat.History(ctx, options)
+chat.GetMessage(ctx, messageID)
+chat.GetMessages(ctx, messageIDs)
+chat.Leave(ctx)
+chat.Delete(ctx, forAll)
+chat.Invite(ctx, userIDs, showHistory)
+chat.RemoveUsers(ctx, userIDs, cleanMessagePeriod)
+chat.PinMessage(ctx, messageID, notify)
+chat.UpdateSettings(ctx, settings)
+chat.ReworkInviteLink(ctx)
+
+user.AddContact(ctx)
+user.RemoveContact(ctx)
+user.GetChatID(ctx, otherUserID)
+```
+
+Ручные значения из `types.Parse*Payload` не привязаны; используйте `Bind`,
+если хотите вызывать на них сетевые методы.
 
 ## `client.Messages`
 
@@ -123,24 +173,33 @@ func (c *Client) OnRaw(handler func(context.Context, *types.RawEvent) error)
 
 ```go
 func (s *messages.MessageService) SendMessage(ctx context.Context, chatID int64, text string, replyToMsgID int64, attaches []types.Attachment) (*types.Message, error)
+func (s *messages.MessageService) SendMessageWithOptions(ctx context.Context, chatID int64, text string, attaches []types.Attachment, opts messages.SendOptions) (*types.Message, error)
 func (s *messages.MessageService) EditMessage(ctx context.Context, chatID int64, messageID int64, newText string) error
+func (s *messages.MessageService) EditMessageResultWithAttachments(ctx context.Context, chatID, messageID int64, text string, elements []map[string]any, attachments []types.Attachment) (*types.Message, error)
 func (s *messages.MessageService) DeleteMessage(ctx context.Context, chatID int64, messageID int64, forAll bool) error
 func (s *messages.MessageService) ForwardMessage(ctx context.Context, chatID int64, messageID int64, sourceChatID int64, notify bool) (*types.Message, error)
 func (s *messages.MessageService) ForwardMessages(ctx context.Context, toChatID int64, fromChatID int64, messageIDs []int64) error
 func (s *messages.MessageService) PinMessage(ctx context.Context, chatID int64, messageID int64) error
 func (s *messages.MessageService) GetChatHistory(ctx context.Context, chatID int64, fromTime int64, count int) ([]types.Message, error)
 func (s *messages.MessageService) GetHistory(ctx context.Context, chatID int64, fromTime int64, count int) ([]types.Message, error)
+func (s *messages.MessageService) FetchHistory(ctx context.Context, chatID int64, opts types.HistoryActionOptions) ([]types.Message, error)
 func (s *messages.MessageService) GetMessages(ctx context.Context, chatID int64, messageIDs []int64) ([]types.Message, error)
 func (s *messages.MessageService) GetMessage(ctx context.Context, chatID, messageID int64) (*types.Message, error)
 func (s *messages.MessageService) GetVideoByID(ctx context.Context, chatID, messageID, videoID int64) (types.Attachment, error)
+func (s *messages.MessageService) GetVideoRequestByID(ctx context.Context, chatID, messageID, videoID int64) (*types.VideoRequest, error)
 func (s *messages.MessageService) GetFileByID(ctx context.Context, chatID, messageID, fileID int64) (types.Attachment, error)
+func (s *messages.MessageService) GetFileRequestByID(ctx context.Context, chatID, messageID, fileID int64) (*types.FileRequest, error)
 func (s *messages.MessageService) AddReaction(ctx context.Context, chatID int64, messageID int64, reaction string) error
+func (s *messages.MessageService) AddReactionInfo(ctx context.Context, chatID int64, messageID int64, reaction string) (*types.ReactionInfo, error)
 func (s *messages.MessageService) RemoveReaction(ctx context.Context, chatID int64, messageID int64, reaction string) error
+func (s *messages.MessageService) RemoveReactionInfo(ctx context.Context, chatID int64, messageID int64) (*types.ReactionInfo, error)
 func (s *messages.MessageService) GetReactions(ctx context.Context, chatID int64, messageIDs []int64) (map[int64][]types.ReactionInfo, error)
 func (s *messages.MessageService) ReadMessage(ctx context.Context, messageID int64, chatID int64) error
+func (s *messages.MessageService) ReadMessageState(ctx context.Context, messageID int64, chatID int64) (*types.ReadState, error)
 func (s *messages.MessageService) ReadMessages(ctx context.Context, chatID int64, messageIDs []int64) error
 func (s *messages.MessageService) ReadChat(ctx context.Context, chatID int64, markID int64) error
 func (s *messages.MessageService) VotePoll(ctx context.Context, chatID int64, messageID int64, pollID int64, optionIDs []int) error
+func (s *messages.MessageService) VotePollState(ctx context.Context, chatID int64, messageID int64, pollID int64, optionIDs []int) (*types.PollState, error)
 ```
 
 ## `client.Chats`
@@ -200,7 +259,7 @@ func (s *users.UserService) AddContact(ctx context.Context, userID int64, firstN
 func (s *users.UserService) AddContactByID(ctx context.Context, contactID int64) (*types.User, error)
 func (s *users.UserService) UpdateContact(ctx context.Context, userID int64, firstName, lastName string) error
 func (s *users.UserService) RemoveContact(ctx context.Context, contactID int64) error
-func (s *users.UserService) ImportContacts(ctx context.Context, contacts map[string]string) ([]types.User, error)
+func (s *users.UserService) ImportContacts(ctx context.Context, contacts any) ([]types.User, error) // []types.ContactInfo или map[string]string
 func (s *users.UserService) GetSessions(ctx context.Context) ([]users.SessionItem, error)
 func (s *users.UserService) GetActiveSessions(ctx context.Context) ([]users.SessionItem, error)
 func (s *users.UserService) CloseSession(ctx context.Context, sessionID int64) error
@@ -215,6 +274,7 @@ func (s *users.UserService) Set2FA(ctx context.Context, password, hint, email st
 func (s *uploads.UploadService) UploadPhoto(ctx context.Context, data []byte, fileName string) (*types.Attachment, error)
 func (s *uploads.UploadService) UploadPhotoWithOptions(ctx context.Context, data []byte, fileName string, profile bool) (*types.Attachment, error)
 func (s *uploads.UploadService) UploadVideo(ctx context.Context, data []byte, fileName string, duration int) (*types.Attachment, error)
+func (s *uploads.UploadService) UploadVideoNote(ctx context.Context, data []byte, fileName string, duration int) (*types.Attachment, error)
 func (s *uploads.UploadService) UploadVoice(ctx context.Context, data []byte, duration int) (*types.Attachment, error)
 func (s *uploads.UploadService) UploadFile(ctx context.Context, data []byte, fileName string) (*types.Attachment, error)
 func uploads.DecodeThumbhash(value string) ([]byte, error)
@@ -265,7 +325,7 @@ func (s *authapi.AuthService) SetPassword(ctx context.Context, trackID, password
 func (s *authapi.AuthService) SetHint(ctx context.Context, trackID, hint string) error
 func (s *authapi.AuthService) RequestEmailCode(ctx context.Context, trackID, email string) error
 func (s *authapi.AuthService) VerifyEmailCode(ctx context.Context, trackID, code string) error
-func (s *authapi.AuthService) CommitTwoFactor(ctx context.Context, trackID, password, hint string, capabilities []string) error
+func (s *authapi.AuthService) CommitTwoFactor(ctx context.Context, trackID, password, hint string, capabilities []authapi.TwoFactorAction) error
 ```
 
 ## `client.Bots`
@@ -332,7 +392,7 @@ func session.NewSqliteStore(db *sql.DB) (*session.SqliteStore, error)
 type Store interface {
     SaveSession(*SessionInfo) error
     LoadSession() (*SessionInfo, error)
-    UpdateToken(phone, newToken string) error
+    UpdateToken(oldToken, newToken string) error
 }
 ```
 

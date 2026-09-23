@@ -127,7 +127,8 @@ client.OnDisconnect(func(ctx context.Context, err error) {
 
 ### `OnRaw`
 
-Получает событие, которое не было разобрано в typed event.
+Получает каждый серверный event в исходном виде. Для известных opcode сначала
+вызывается typed handler, затем тот же frame передаётся в `OnRaw`.
 
 ```go
 client.OnRaw(func(ctx context.Context, event *types.RawEvent) error {
@@ -141,4 +142,9 @@ client.OnRaw(func(ctx context.Context, event *types.RawEvent) error {
 - handlers сообщений и typed events вызываются в отдельных goroutine;
 - `OnDisconnect` вызывается при завершении текущего соединения;
 - для тяжёлой работы передавайте данные в свою очередь;
-- `OnRaw` не дублирует события, которые уже разобраны библиотекой.
+- `OnRaw` намеренно дублирует typed events и подходит для трассировки протокола;
+- все typed-регистрации принимают необязательные predicate-фильтры.
+- `IncludeRouter` подключает живое дерево: handlers, добавленные в дочерний
+  router после подключения, тоже работают;
+- `OnError` имеет глобальную область, а `OnErrorScoped(ErrorScopeLocal, ...)`
+  ограничивает обработчик ошибками его собственного router-а.

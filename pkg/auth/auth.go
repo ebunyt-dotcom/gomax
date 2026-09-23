@@ -15,6 +15,8 @@ import (
 	"github.com/skip2/go-qrcode"
 )
 
+var ErrPasswordAttemptsExceeded = fmt.Errorf("password attempts exceeded")
+
 // CodeProvider retrieves SMS verification code.
 type CodeProvider interface {
 	GetCode(ctx context.Context) (string, error)
@@ -120,6 +122,10 @@ type SmsAuthFlow struct {
 	CallsSeed        int64
 	Arch             string
 	FpGen            *fingerprint.FingerprintGenerator
+	// PasswordMaxAttempts is nil for unlimited attempts. Zero or a negative
+	// value rejects password authentication immediately.
+	PasswordMaxAttempts *int
+	LogLevel            string
 }
 
 // NewSmsAuthFlow creates a new SMS authentication flow.
@@ -135,6 +141,15 @@ func NewSmsAuthFlow(codeProvider CodeProvider, pwdProvider PasswordProvider) *Sm
 		PasswordProvider: pwdProvider,
 		Arch:             "arm64-v8a",
 		FpGen:            fingerprint.NewFingerprintGenerator(fingerprint.DefaultFingerprint()),
+	}
+}
+
+func (f *SmsAuthFlow) logf(format string, args ...any) {
+	switch strings.ToUpper(f.LogLevel) {
+	case "OFF", "NONE", "FATAL", "ERROR", "WARN", "WARNING":
+		return
+	default:
+		log.Printf("[gomax] "+format, args...)
 	}
 }
 
@@ -164,7 +179,7 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		}
 	}
 
-	log.Printf("[gomax] Requesting SMS verification code for %s (START_AUTH, fingerprint=%d bytes)...", phone, len(fpBytes))
+	f.logf("Requesting SMS verification code for %s (START_AUTH, fingerprint=%d bytes)...", phone, len(fpBytes))
 	reqPayload := map[string]interface{}{
 		"phone": phone,
 		"type":  "START_AUTH",
@@ -202,14 +217,14 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 	// A token means that Max created an authentication challenge. It does not
 	// prove that the SMS provider delivered a message, so keep the server's
 	// delivery metadata visible without exposing the token itself.
-	log.Printf("[gomax] SMS auth request accepted (codeLength=%v, requestsLeft=%v, requestMaxDuration=%v, altActionDuration=%v); challenge token acquired", reqRes["codeLength"], reqRes["requestCountLeft"], reqRes["requestMaxDuration"], reqRes["altActionDuration"])
+	f.logf("SMS auth request accepted (codeLength=%v, requestsLeft=%v, requestMaxDuration=%v, altActionDuration=%v); challenge token acquired", reqRes["codeLength"], reqRes["requestCountLeft"], reqRes["requestMaxDuration"], reqRes["altActionDuration"])
 
 	code, err := f.CodeProvider.GetCode(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read sms code failed: %w", err)
 	}
 
-	log.Printf("[gomax] Verifying SMS code (CHECK_CODE)...")
+	f.logf("Verifying SMS code (CHECK_CODE)...")
 	submitPayload := map[string]interface{}{
 		"token":         challengeToken,
 		"verifyCode":    code,
@@ -255,52 +270,44 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 		}
 
 		if challengeHint != "" {
-			log.Printf("[gomax] 2FA password challenge detected (hint: %s); requesting password...", challengeHint)
+			f.logf("2FA password challenge detected (hint: %s); requesting password...", challengeHint)
 		} else {
-			log.Printf("[gomax] 2FA password challenge detected; requesting password...")
+			f.logf("2FA password challenge detected; requesting password...")
 		}
 
-		var pwd string
-		var pErr error
-		if pwh, ok := f.PasswordProvider.(PasswordProviderWithHint); ok {
-			pwd, pErr = pwh.GetPasswordWithHint(ctx, challengeHint)
-		} else {
-			pwd, pErr = f.PasswordProvider.GetPassword(ctx)
-		}
-		if pErr != nil {
-			return nil, fmt.Errorf("get 2fa password failed: %w", pErr)
-		}
-
-		log.Printf("[gomax] Submitting 2FA password (AUTH_LOGIN_CHECK_PASSWORD)...")
-		pwdPayload := map[string]interface{}{
-			"trackId":  trackID,
-			"password": pwd,
-		}
-		res, err = invoker.Invoke(ctx, protocol.OpAuthLoginCheckPassword, pwdPayload)
-		if err != nil {
-			// Fallback: try OpAuth with token, phone, and password
-			log.Printf("[gomax] OpAuthLoginCheckPassword returned error (%v); trying fallback OpAuth...", err)
-			fallbackPayload := map[string]interface{}{
-				"token":    trackID,
-				"phone":    phone,
-				"password": pwd,
+		for attempt := 0; f.PasswordMaxAttempts == nil || attempt < *f.PasswordMaxAttempts; attempt++ {
+			var pwd string
+			var pErr error
+			if pwh, ok := f.PasswordProvider.(PasswordProviderWithHint); ok {
+				pwd, pErr = pwh.GetPasswordWithHint(ctx, challengeHint)
+			} else {
+				pwd, pErr = f.PasswordProvider.GetPassword(ctx)
 			}
-			res, err = invoker.Invoke(ctx, protocol.OpAuth, fallbackPayload)
+			if pErr != nil {
+				return nil, fmt.Errorf("get 2fa password failed: %w", pErr)
+			}
+			if pwd == "" {
+				continue
+			}
+
+			f.logf("Submitting 2FA password (AUTH_LOGIN_CHECK_PASSWORD)...")
+			res, err = invoker.Invoke(ctx, protocol.OpAuthLoginCheckPassword, map[string]interface{}{
+				"trackId": trackID, "password": pwd,
+			})
 			if err != nil {
-				return nil, fmt.Errorf("2fa auth failed: %w", err)
+				continue
+			}
+			if errVal, ok := res["error"]; ok && errVal != nil {
+				continue
+			}
+			token, isRegister = extractToken(res)
+			if token != "" {
+				break
 			}
 		}
-
-		// Check for 2FA validation error in response
-		if errVal, ok := res["error"]; ok && errVal != nil {
-			msg := res["message"]
-			if msg == nil {
-				msg = res["localizedMessage"]
-			}
-			return nil, fmt.Errorf("2fa password rejected by server: %v (message: %v)", errVal, msg)
+		if token == "" {
+			return nil, ErrPasswordAttemptsExceeded
 		}
-
-		token, isRegister = extractToken(res)
 	} else if token == "" {
 		// No 2FA and no token: check for error response
 		if errVal, ok := res["error"]; ok && errVal != nil {
@@ -323,9 +330,9 @@ func (f *SmsAuthFlow) Authenticate(ctx context.Context, invoker api.Invoker, pho
 	}
 
 	if isRegister {
-		log.Printf("[gomax] Received registration token for new account")
+		f.logf("Received registration token for new account")
 	} else {
-		log.Printf("[gomax] Authentication successful, received session token")
+		f.logf("Authentication successful, received session token")
 	}
 
 	var uid int64

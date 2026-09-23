@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"reflect"
@@ -20,6 +21,8 @@ const (
 	// MaxExtensionSize bounds an extension allocation independently of the
 	// decompression limit; extensions are small wrappers in the Max protocol.
 	MaxExtensionSize = 5 * 1024 * 1024
+	// MaxMsgpackDepth prevents stack exhaustion from recursively nested values.
+	MaxMsgpackDepth = 128
 )
 
 // Ext represents a MessagePack extension type with a type code and raw payload bytes.
@@ -83,6 +86,9 @@ func (c *MsgpackCodec) Decode(payloadBytes []byte) (any, error) {
 	if len(payloadBytes) == 0 {
 		return make(map[string]any), nil
 	}
+	if _, err := validateMsgpackValue(payloadBytes, 0, 0); err != nil {
+		return nil, fmt.Errorf("protocol: unsafe msgpack payload: %w", err)
+	}
 
 	dec := msgpack.NewDecoder(bytes.NewReader(payloadBytes))
 
@@ -123,6 +129,159 @@ func (c *MsgpackCodec) Decode(payloadBytes []byte) (any, error) {
 	}
 
 	return c.Normalize(result), nil
+}
+
+// validateMsgpackValue checks declared collection and byte lengths before the
+// third-party decoder is allowed to allocate them. Malformed array32/map32
+// prefixes can otherwise request tens of gigabytes from the Go runtime.
+func validateMsgpackValue(data []byte, off, depth int) (int, error) {
+	if depth > MaxMsgpackDepth {
+		return off, fmt.Errorf("nesting exceeds %d levels", MaxMsgpackDepth)
+	}
+	if off >= len(data) {
+		return off, fmt.Errorf("unexpected end of input")
+	}
+
+	code := data[off]
+	off++
+	if code <= 0x7f || code >= 0xe0 || code == 0xc0 || code == 0xc2 || code == 0xc3 {
+		return off, nil
+	}
+	if code >= 0xa0 && code <= 0xbf {
+		return consumeMsgpackBytes(data, off, uint64(code&0x1f))
+	}
+	if code >= 0x90 && code <= 0x9f {
+		return validateMsgpackCollection(data, off, uint64(code&0x0f), false, depth)
+	}
+	if code >= 0x80 && code <= 0x8f {
+		return validateMsgpackCollection(data, off, uint64(code&0x0f), true, depth)
+	}
+
+	switch code {
+	case 0xc1:
+		return off, fmt.Errorf("reserved msgpack code 0xc1")
+	case 0xc4, 0xd9:
+		n, next, err := readMsgpackLength(data, off, 1)
+		if err != nil {
+			return off, err
+		}
+		return consumeMsgpackBytes(data, next, n)
+	case 0xc5, 0xda:
+		n, next, err := readMsgpackLength(data, off, 2)
+		if err != nil {
+			return off, err
+		}
+		return consumeMsgpackBytes(data, next, n)
+	case 0xc6, 0xdb:
+		n, next, err := readMsgpackLength(data, off, 4)
+		if err != nil {
+			return off, err
+		}
+		return consumeMsgpackBytes(data, next, n)
+	case 0xc7, 0xc8, 0xc9:
+		width := 1
+		if code == 0xc8 {
+			width = 2
+		} else if code == 0xc9 {
+			width = 4
+		}
+		n, next, err := readMsgpackLength(data, off, width)
+		if err != nil {
+			return off, err
+		}
+		return consumeMsgpackBytes(data, next, n+1) // extension type byte
+	case 0xca, 0xce, 0xd2:
+		return consumeMsgpackBytes(data, off, 4)
+	case 0xcb, 0xcf, 0xd3:
+		return consumeMsgpackBytes(data, off, 8)
+	case 0xcc, 0xd0:
+		return consumeMsgpackBytes(data, off, 1)
+	case 0xcd, 0xd1:
+		return consumeMsgpackBytes(data, off, 2)
+	case 0xd4:
+		return consumeMsgpackBytes(data, off, 2)
+	case 0xd5:
+		return consumeMsgpackBytes(data, off, 3)
+	case 0xd6:
+		return consumeMsgpackBytes(data, off, 5)
+	case 0xd7:
+		return consumeMsgpackBytes(data, off, 9)
+	case 0xd8:
+		return consumeMsgpackBytes(data, off, 17)
+	case 0xdc, 0xdd:
+		width := 2
+		if code == 0xdd {
+			width = 4
+		}
+		n, next, err := readMsgpackLength(data, off, width)
+		if err != nil {
+			return off, err
+		}
+		return validateMsgpackCollection(data, next, n, false, depth)
+	case 0xde, 0xdf:
+		width := 2
+		if code == 0xdf {
+			width = 4
+		}
+		n, next, err := readMsgpackLength(data, off, width)
+		if err != nil {
+			return off, err
+		}
+		return validateMsgpackCollection(data, next, n, true, depth)
+	default:
+		return off, fmt.Errorf("unsupported msgpack code 0x%02x", code)
+	}
+}
+
+func readMsgpackLength(data []byte, off, width int) (uint64, int, error) {
+	if off < 0 || width < 1 || off > len(data)-width {
+		return 0, off, fmt.Errorf("truncated length prefix")
+	}
+	var n uint64
+	switch width {
+	case 1:
+		n = uint64(data[off])
+	case 2:
+		n = uint64(binary.BigEndian.Uint16(data[off : off+2]))
+	case 4:
+		n = uint64(binary.BigEndian.Uint32(data[off : off+4]))
+	}
+	return n, off + width, nil
+}
+
+func consumeMsgpackBytes(data []byte, off int, n uint64) (int, error) {
+	if off < 0 || off > len(data) || n > uint64(len(data)-off) {
+		remaining := 0
+		if off >= 0 && off <= len(data) {
+			remaining = len(data) - off
+		}
+		return off, fmt.Errorf("declared length %d exceeds remaining payload %d", n, remaining)
+	}
+	return off + int(n), nil
+}
+
+func validateMsgpackCollection(data []byte, off int, n uint64, isMap bool, depth int) (int, error) {
+	if off < 0 || off > len(data) {
+		return off, fmt.Errorf("invalid collection offset")
+	}
+	remaining := uint64(len(data) - off)
+	values := n
+	if isMap {
+		if n > remaining/2 {
+			return off, fmt.Errorf("declared map length %d exceeds payload", n)
+		}
+		values = n * 2
+	} else if n > remaining {
+		return off, fmt.Errorf("declared array length %d exceeds payload", n)
+	}
+	for i := uint64(0); i < values; i++ {
+		var err error
+		off, err = validateMsgpackValue(data, off, depth+1)
+		if err != nil {
+			return off, err
+		}
+	}
+	return off, nil
 }
 
 // Normalize recursively traverses decoded objects, converting:

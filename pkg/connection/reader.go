@@ -10,13 +10,13 @@ import (
 )
 
 const (
-	// MaxPayloadSize mirrors the protocol's 24-bit wire limit exactly.
-	MaxPayloadSize = protocol.MaxPayloadLen
+	// MaxPayloadSize is the application safety ceiling for one encoded frame.
+	MaxPayloadSize = protocol.MaxDecompressedSize
 )
 
 var (
 	// ErrFrameTooLarge is returned when payload length exceeds MaxPayloadSize.
-	ErrFrameTooLarge = errors.New("connection: frame payload exceeds maximum size limit (16MB)")
+	ErrFrameTooLarge = errors.New("connection: frame payload exceeds maximum size limit (5MB)")
 	// ErrIncompleteFrame is returned when transport returns fewer bytes than expected.
 	ErrIncompleteFrame = errors.New("connection: incomplete frame read from transport")
 )
@@ -102,7 +102,8 @@ func NewWSReader(t transport.Transport) *WSReader {
 	return &WSReader{t: t}
 }
 
-// ReadFrame reads a single binary WebSocket message containing the complete frame.
+// ReadFrame reads one complete WebSocket message. JSON frames do not contain
+// the binary TCP header, so framing validation belongs to the protocol.
 func (r *WSReader) ReadFrame() ([]byte, error) {
 	// -1 signifies full frame read from WebSocket transport
 	data, err := r.t.Recv(-1)
@@ -110,7 +111,7 @@ func (r *WSReader) ReadFrame() ([]byte, error) {
 		return nil, err
 	}
 
-	if len(data) < protocol.HeaderSize {
+	if len(data) == 0 {
 		return nil, ErrIncompleteFrame
 	}
 

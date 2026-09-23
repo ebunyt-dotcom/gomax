@@ -40,7 +40,7 @@ func (c Command) IsValid() bool {
 // Opcode identifies the RPC method or notification event in the Max protocol.
 type Opcode uint16
 
-// Full catalog of all 114 protocol opcodes matching pymax.protocol.enums.Opcode.
+// Full catalog of all 177 protocol opcodes matching pymax.protocol.enums.Opcode.
 const (
 	OpPing                         Opcode = 1   // Keepalive ping/pong heartbeat
 	OpDebug                        Opcode = 2   // Protocol debugging frame
@@ -433,7 +433,7 @@ func (o Opcode) IsNotification() bool {
 	}
 }
 
-// CountOpcodes returns the total number of defined opcodes (114).
+// CountOpcodes returns the total number of defined opcodes (177).
 func CountOpcodes() int {
 	return len(opcodeNames)
 }

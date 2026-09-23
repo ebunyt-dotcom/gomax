@@ -57,15 +57,15 @@ func (m *MockTransport) Send(data []byte) error {
 
 func (m *MockTransport) Recv(n int) ([]byte, error) {
 	m.mu.Lock()
-	if m.recvErr != nil {
-		defer m.mu.Unlock()
-		return nil, m.recvErr
-	}
 	if len(m.recvQueue) > 0 {
 		chunk := m.recvQueue[0]
 		m.recvQueue = m.recvQueue[1:]
 		m.mu.Unlock()
 		return chunk, nil
+	}
+	if m.recvErr != nil {
+		defer m.mu.Unlock()
+		return nil, m.recvErr
 	}
 	blockCh := m.blockCh
 	m.mu.Unlock()

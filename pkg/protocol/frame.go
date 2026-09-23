@@ -19,7 +19,7 @@ func (f *InboundFrame) IsResponse() bool {
 
 // IsEvent returns true if this frame is a push event.
 func (f *InboundFrame) IsEvent() bool {
-	return f.Cmd == CmdEvent || f.Opcode.IsNotification()
+	return f.Cmd == CmdRequest || f.Cmd == CmdEvent
 }
 
 // IsError returns true if this frame indicates a server error.

@@ -395,3 +395,40 @@ func TestWebSocketTransport_Loopback(t *testing.T) {
 		t.Error("expected client to be disconnected")
 	}
 }
+
+func TestWebSocketTransport_TextFrames(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	types := make(chan int, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		messageType, _, err := ws.ReadMessage()
+		if err == nil {
+			types <- messageType
+		}
+	}))
+	defer server.Close()
+	opts := transport.DefaultWSOptions("ws" + strings.TrimPrefix(server.URL, "http"))
+	opts.TextFrames = true
+	client := transport.NewWebSocketTransport(opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Send([]byte(`{"ver":11}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-types:
+		if got != websocket.TextMessage {
+			t.Fatalf("message type=%d", got)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}

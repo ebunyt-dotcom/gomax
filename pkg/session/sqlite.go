@@ -2,6 +2,7 @@ package session
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -15,20 +16,25 @@ type SqliteStore struct {
 // NewSqliteStore wraps an existing *sql.DB connection and ensures table schema exists.
 func NewSqliteStore(db *sql.DB) (*SqliteStore, error) {
 	query := `
-	CREATE TABLE IF NOT EXISTS max_sessions (
-		phone TEXT PRIMARY KEY,
-		token TEXT NOT NULL,
-		device_id TEXT,
-		mt_instance_id TEXT,
-		chats_sync INTEGER,
-		contacts_sync INTEGER,
-		drafts_sync INTEGER,
-		presence_sync INTEGER,
-		config_hash TEXT
+	CREATE TABLE IF NOT EXISTS max_sessions_v2 (
+		token TEXT PRIMARY KEY,
+		phone TEXT NOT NULL DEFAULT '',
+		device_id TEXT NOT NULL DEFAULT '',
+		mt_instance_id TEXT NOT NULL DEFAULT '',
+		chats_sync INTEGER NOT NULL DEFAULT -1,
+		contacts_sync INTEGER NOT NULL DEFAULT -1,
+		drafts_sync INTEGER NOT NULL DEFAULT -1,
+		presence_sync INTEGER NOT NULL DEFAULT -1,
+		config_hash TEXT NOT NULL DEFAULT '',
+		user_agent TEXT
 	);`
 	if _, err := db.Exec(query); err != nil {
 		return nil, fmt.Errorf("create max_sessions table failed: %w", err)
 	}
+	// Import legacy phone-keyed rows once, without deleting the old table.
+	_, _ = db.Exec(`INSERT OR IGNORE INTO max_sessions_v2
+		(token, phone, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash)
+		SELECT token, phone, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash FROM max_sessions`)
 
 	return &SqliteStore{db: db}, nil
 }
@@ -38,22 +44,27 @@ func (s *SqliteStore) SaveSession(info *SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	userAgent, err := json.Marshal(info.UserAgent)
+	if err != nil {
+		return err
+	}
 	query := `
-	INSERT INTO max_sessions (phone, token, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(phone) DO UPDATE SET
-		token = excluded.token,
+	INSERT INTO max_sessions_v2 (token, phone, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash, user_agent)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(token) DO UPDATE SET
+		phone = excluded.phone,
 		device_id = excluded.device_id,
 		mt_instance_id = excluded.mt_instance_id,
 		chats_sync = excluded.chats_sync,
 		contacts_sync = excluded.contacts_sync,
 		drafts_sync = excluded.drafts_sync,
 		presence_sync = excluded.presence_sync,
-		config_hash = excluded.config_hash;`
+		config_hash = excluded.config_hash,
+		user_agent = excluded.user_agent;`
 
-	_, err := s.db.Exec(query,
-		info.Phone,
+	_, err = s.db.Exec(query,
 		info.Token,
+		info.Phone,
 		info.DeviceID,
 		info.MTInstanceID,
 		info.Sync.ChatsSync,
@@ -61,6 +72,7 @@ func (s *SqliteStore) SaveSession(info *SessionInfo) error {
 		info.Sync.DraftsSync,
 		info.Sync.PresenceSync,
 		info.Sync.ConfigHash,
+		string(userAgent),
 	)
 	return err
 }
@@ -70,10 +82,11 @@ func (s *SqliteStore) LoadSession() (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := `SELECT phone, token, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash FROM max_sessions LIMIT 1;`
+	query := `SELECT COALESCE(phone, ''), COALESCE(token, ''), COALESCE(device_id, ''), COALESCE(mt_instance_id, ''), COALESCE(chats_sync, -1), COALESCE(contacts_sync, -1), COALESCE(drafts_sync, -1), COALESCE(presence_sync, -1), COALESCE(config_hash, ''), user_agent FROM max_sessions_v2 LIMIT 1;`
 	row := s.db.QueryRow(query)
 
 	var info SessionInfo
+	var rawUserAgent sql.NullString
 	err := row.Scan(
 		&info.Phone,
 		&info.Token,
@@ -84,6 +97,7 @@ func (s *SqliteStore) LoadSession() (*SessionInfo, error) {
 		&info.Sync.DraftsSync,
 		&info.Sync.PresenceSync,
 		&info.Sync.ConfigHash,
+		&rawUserAgent,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -91,16 +105,25 @@ func (s *SqliteStore) LoadSession() (*SessionInfo, error) {
 		}
 		return nil, err
 	}
+	if rawUserAgent.Valid && rawUserAgent.String != "" && rawUserAgent.String != "null" {
+		_ = json.Unmarshal([]byte(rawUserAgent.String), &info.UserAgent)
+	}
 	return &info, nil
 }
 
-// UpdateToken updates the authorization token for the specified phone number.
-func (s *SqliteStore) UpdateToken(phone, newToken string) error {
+// UpdateToken rotates an authorization token while preserving session state.
+func (s *SqliteStore) UpdateToken(oldToken, newToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := `UPDATE max_sessions SET token = ? WHERE phone = ?;`
-	_, err := s.db.Exec(query, newToken, phone)
+	result, err := s.db.Exec(`UPDATE max_sessions_v2 SET token = ? WHERE token = ?;`, newToken, oldToken)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err == nil && rows == 0 {
+		return fmt.Errorf("session: token to replace was not found")
+	}
 	return err
 }
 
@@ -117,13 +140,17 @@ func (s *SqliteStore) LoadSessionByPhone(phone string) (*SessionInfo, error) {
 func (s *SqliteStore) loadWhere(where string, arg interface{}) (*SessionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	row := s.db.QueryRow(`SELECT phone, token, device_id, mt_instance_id, chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash FROM max_sessions WHERE `+where+` LIMIT 1`, arg)
+	row := s.db.QueryRow(`SELECT COALESCE(phone, ''), COALESCE(token, ''), COALESCE(device_id, ''), COALESCE(mt_instance_id, ''), COALESCE(chats_sync, -1), COALESCE(contacts_sync, -1), COALESCE(drafts_sync, -1), COALESCE(presence_sync, -1), COALESCE(config_hash, ''), user_agent FROM max_sessions_v2 WHERE `+where+` LIMIT 1`, arg)
 	var info SessionInfo
-	if err := row.Scan(&info.Phone, &info.Token, &info.DeviceID, &info.MTInstanceID, &info.Sync.ChatsSync, &info.Sync.ContactsSync, &info.Sync.DraftsSync, &info.Sync.PresenceSync, &info.Sync.ConfigHash); err != nil {
+	var rawUserAgent sql.NullString
+	if err := row.Scan(&info.Phone, &info.Token, &info.DeviceID, &info.MTInstanceID, &info.Sync.ChatsSync, &info.Sync.ContactsSync, &info.Sync.DraftsSync, &info.Sync.PresenceSync, &info.Sync.ConfigHash, &rawUserAgent); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if rawUserAgent.Valid && rawUserAgent.String != "" && rawUserAgent.String != "null" {
+		_ = json.Unmarshal([]byte(rawUserAgent.String), &info.UserAgent)
 	}
 	return &info, nil
 }
@@ -132,7 +159,7 @@ func (s *SqliteStore) loadWhere(where string, arg interface{}) (*SessionInfo, er
 func (s *SqliteStore) DeleteSession(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM max_sessions WHERE token = ?`, token)
+	_, err := s.db.Exec(`DELETE FROM max_sessions_v2 WHERE token = ?`, token)
 	return err
 }
 
@@ -140,7 +167,7 @@ func (s *SqliteStore) DeleteSession(token string) error {
 func (s *SqliteStore) DeleteAllSessions() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM max_sessions`)
+	_, err := s.db.Exec(`DELETE FROM max_sessions_v2`)
 	return err
 }
 

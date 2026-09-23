@@ -37,16 +37,34 @@ type UploadService struct {
 	videoWaiters map[int64]chan struct{}
 	fileWaiters  map[int64]chan struct{}
 	voiceWaiters map[int64]chan struct{}
+	userAgent    string
+}
+
+type Options struct {
+	Timeout   time.Duration
+	ProxyURL  string
+	UserAgent string
 }
 
 // NewUploadService creates a new UploadService instance.
 func NewUploadService(invoker api.Invoker) *UploadService {
+	return NewUploadServiceWithOptions(invoker, Options{})
+}
+
+func NewUploadServiceWithOptions(invoker api.Invoker, opts Options) *UploadService {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if opts.ProxyURL != "" {
+		if proxyURL, err := url.Parse(opts.ProxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+	}
 	return &UploadService{
 		invoker:      invoker,
-		httpClient:   &http.Client{},
+		httpClient:   &http.Client{Timeout: opts.Timeout, Transport: transport},
 		videoWaiters: make(map[int64]chan struct{}),
 		fileWaiters:  make(map[int64]chan struct{}),
 		voiceWaiters: make(map[int64]chan struct{}),
+		userAgent:    opts.UserAgent,
 	}
 }
 
@@ -58,7 +76,7 @@ func (s *UploadService) UploadPhoto(ctx context.Context, data []byte, fileName s
 // UploadPhotoWithOptions uploads an image, optionally as a profile avatar.
 func (s *UploadService) UploadPhotoWithOptions(ctx context.Context, data []byte, fileName string, profile bool) (*types.Attachment, error) {
 	res, err := s.invoker.Invoke(ctx, protocol.OpPhotoUpload, map[string]interface{}{
-		"count": 1, "profile": profile,
+		"count": 1, "type": 0, "uploaderType": 0, "profile": profile,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("request photo upload url failed: %w", err)
@@ -100,19 +118,28 @@ func (s *UploadService) UploadPhotoWithOptions(ctx context.Context, data []byte,
 // UploadVideo requests a video slot, uploads the bytes and waits for the
 // server's processing notification.
 func (s *UploadService) UploadVideo(ctx context.Context, data []byte, fileName string, duration int) (*types.Attachment, error) {
-	return s.uploadVideoLike(ctx, data, fileName, duration, false)
+	return s.uploadVideoLike(ctx, data, fileName, duration, false, false)
+}
+
+// UploadVideoNote uploads a round video note and returns the thumbhash supplied
+// directly by the upload gateway; video notes do not emit VIDEO_READY.
+func (s *UploadService) UploadVideoNote(ctx context.Context, data []byte, fileName string, duration int) (*types.Attachment, error) {
+	return s.uploadVideoLike(ctx, data, fileName, duration, false, true)
 }
 
 // UploadVoice uploads an audio/voice note through VIDEO_UPLOAD, as required
 // by PyMax's protocol (voice is not a FILE_UPLOAD operation).
 func (s *UploadService) UploadVoice(ctx context.Context, data []byte, duration int) (*types.Attachment, error) {
-	return s.uploadVideoLike(ctx, data, "voice.ogg", duration, true)
+	return s.uploadVideoLike(ctx, data, "voice.ogg", duration, true, false)
 }
 
-func (s *UploadService) uploadVideoLike(ctx context.Context, data []byte, fileName string, duration int, voice bool) (*types.Attachment, error) {
-	payload := map[string]interface{}{"count": 1}
+func (s *UploadService) uploadVideoLike(ctx context.Context, data []byte, fileName string, duration int, voice, videoNote bool) (*types.Attachment, error) {
+	payload := map[string]interface{}{"count": 1, "type": 0, "uploaderType": 0, "profile": false}
 	if voice {
 		payload["type"] = 2
+		payload["uploaderType"] = 1
+	} else if videoNote {
+		payload["type"] = 1
 		payload["uploaderType"] = 1
 	}
 	res, err := s.invoker.Invoke(ctx, protocol.OpVideoUpload, payload)
@@ -133,28 +160,49 @@ func (s *UploadService) uploadVideoLike(ctx context.Context, data []byte, fileNa
 		return nil, fmt.Errorf("video upload response is missing url or token")
 	}
 
-	waiter := s.registerWaiter(id, voice)
-	defer s.removeWaiter(id, voice)
-	if err := s.postRaw(ctx, uploadURL, fileName, data); err != nil {
+	var waiter chan struct{}
+	if !voice && !videoNote {
+		waiter = s.registerWaiter(id, false)
+		defer s.removeWaiter(id, false)
+	}
+	body, err := s.postRawResponse(ctx, uploadURL, fileName, data)
+	if err != nil {
 		return nil, fmt.Errorf("video upload http failed: %w", err)
 	}
-	if err := waitReady(ctx, waiter); err != nil {
-		return nil, fmt.Errorf("video processing failed: %w", err)
+	if waiter != nil {
+		if err := waitReady(ctx, waiter); err != nil {
+			return nil, fmt.Errorf("video processing failed: %w", err)
+		}
 	}
 
 	attachmentType := types.AttachmentVideo
 	if voice {
 		attachmentType = types.AttachmentVoice
+	} else if videoNote {
+		attachmentType = types.AttachmentVideoNote
 	}
-	return &types.Attachment{
+	attachment := &types.Attachment{
 		Type: attachmentType, ID: strconv.FormatInt(id, 10), Token: token,
 		FileName: fileName, FileSize: int64(len(data)), Duration: duration,
-	}, nil
+	}
+	if voice {
+		attachment.Wave = make([]byte, 80)
+	}
+	if videoNote && len(body) > 0 {
+		var response map[string]interface{}
+		if json.Unmarshal(body, &response) == nil {
+			thumbhash := stringValue(response["thumbhash"])
+			if thumbhash != "" {
+				attachment.ThumbHash, _ = base64.StdEncoding.DecodeString(thumbhash + strings.Repeat("=", (4-len(thumbhash)%4)%4))
+			}
+		}
+	}
+	return attachment, nil
 }
 
 // UploadFile uploads a document and waits for FILE_READY.
 func (s *UploadService) UploadFile(ctx context.Context, data []byte, fileName string) (*types.Attachment, error) {
-	res, err := s.invoker.Invoke(ctx, protocol.OpFileUpload, map[string]interface{}{"count": 1})
+	res, err := s.invoker.Invoke(ctx, protocol.OpFileUpload, map[string]interface{}{"count": 1, "type": 0, "uploaderType": 0, "profile": false})
 	if err != nil {
 		return nil, fmt.Errorf("request file upload url failed: %w", err)
 	}
@@ -209,7 +257,30 @@ func (s *UploadService) NotifyVideoReady(id int64) { s.resolveWaiter(id, false) 
 func (s *UploadService) NotifyVoiceReady(id int64) { s.resolveWaiter(id, true) }
 
 // NotifyFileReady resolves a pending file upload by ID.
-func (s *UploadService) NotifyFileReady(id int64)  { s.resolveFileWaiter(id) }
+func (s *UploadService) NotifyFileReady(id int64) { s.resolveFileWaiter(id) }
+
+// WaitForMessageAttachments waits for the processing signal that Max requests
+// after returning attachment.not.ready. PyMax applies this only to voice and
+// video-note attachments and retries the message operation once.
+func (s *UploadService) WaitForMessageAttachments(ctx context.Context, attachments []types.Attachment) error {
+	for _, attachment := range attachments {
+		if attachment.Type != types.AttachmentVoice && attachment.Type != types.AttachmentVideoNote {
+			continue
+		}
+		id, err := strconv.ParseInt(attachment.ID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid pending attachment id %q: %w", attachment.ID, err)
+		}
+		voice := attachment.Type == types.AttachmentVoice
+		waiter := s.registerWaiter(id, voice)
+		defer s.removeWaiter(id, voice)
+		if err := waitReady(ctx, waiter); err != nil {
+			return fmt.Errorf("attachment processing failed: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("attachment.not.ready returned for a non voice/video-note attachment")
+}
 
 func (s *UploadService) registerWaiter(id int64, voice bool) chan struct{} {
 	s.mu.Lock()
@@ -301,8 +372,6 @@ func (s *UploadService) postMultipart(ctx context.Context, targetURL, fileName, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	// Preserve the source MIME type for upload gateways that inspect it.
-	req.Header.Set("X-File-Content-Type", contentType)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -319,25 +388,52 @@ func (s *UploadService) postMultipart(ctx context.Context, targetURL, fileName, 
 }
 
 func (s *UploadService) postRaw(ctx context.Context, targetURL, fileName string, data []byte) error {
+	_, err := s.postRawResponseWithRange(ctx, targetURL, fileName, data, false)
+	return err
+}
+
+func (s *UploadService) postRawResponse(ctx context.Context, targetURL, fileName string, data []byte) ([]byte, error) {
+	return s.postRawResponseWithRange(ctx, targetURL, fileName, data, true)
+}
+
+func (s *UploadService) postRawResponseWithRange(ctx context.Context, targetURL, fileName string, data []byte, includeUnit bool) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	end := len(data) - 1
-	req.Header.Set("Content-Disposition", "attachment; filename="+url.QueryEscape(fileName))
+	req.Header.Set("Content-Disposition", "attachment; filename="+quoteHeader(fileName))
 	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
-	req.Header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", end, len(data)))
+	contentRange := fmt.Sprintf("0-%d/%d", end, len(data))
+	if includeUnit {
+		contentRange = "bytes " + contentRange
+	}
+	req.Header.Set("Content-Range", contentRange)
 	req.Header.Set("Connection", "keep-alive")
+	if strings.HasSuffix(strings.ToLower(fileName), ".ogg") {
+		req.Header.Set("Content-Type", "application/octet-stream")
+		if s.userAgent != "" {
+			req.Header.Set("User-Agent", quoteHeader(s.userAgent))
+		}
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("upload returned status %s", resp.Status)
+		return nil, fmt.Errorf("upload returned status %s", resp.Status)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func quoteHeader(value string) string {
+	value = strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+	return strings.ReplaceAll(value, "%2F", "/")
 }
 
 func firstUploadInfo(res map[string]interface{}) (map[string]interface{}, error) {
