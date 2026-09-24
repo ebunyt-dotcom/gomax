@@ -288,11 +288,15 @@ func (wc *WebClient) Start(ctx context.Context) error {
 func (wc *WebClient) runSession(ctx context.Context) error {
 	wsOpts := transport.DefaultWSOptions(wc.cfg.URL)
 	wsOpts.ProxyURL = wc.cfg.Proxy
-	wsOpts.TextFrames = true
+	// Max's production WebSocket endpoint expects the same binary MessagePack
+	// framing as v0.0.1 for SESSION_INIT and the QR flow. Text/JSON frames are
+	// supported by transport as an opt-in compatibility mode, but must not be
+	// used by the Max WebClient handshake.
+	wsOpts.TextFrames = false
 	wsTransport := transport.NewWebSocketTransport(wsOpts)
 	wsReader := connection.NewWSReader(wsTransport)
 
-	wsProto, err := protocol.NewWsProtocol(false)
+	wsProto, err := protocol.NewWsProtocol(true)
 	if err != nil {
 		return fmt.Errorf("init ws protocol failed: %w", err)
 	}
